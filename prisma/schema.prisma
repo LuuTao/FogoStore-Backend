@@ -1,0 +1,177 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+model User {
+  id        String     @id @default(uuid())
+  phone     String?    @unique
+  email     String?    @unique
+  password  String
+  fullName  String
+  role      Role       @default(CUSTOMER)
+  orders    Order[]
+  posts     Post[]
+  createdAt DateTime   @default(now())
+  cartItems CartItem[]
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String
+  slug      String    @unique
+  series    Series[]
+  products  Product[]
+  createdAt DateTime  @default(now())
+}
+
+model Series {
+  id         String    @id @default(uuid())
+  name       String
+  slug       String    @unique
+  categoryId String
+  category   Category  @relation(fields: [categoryId], references: [id])
+  products   Product[]
+  createdAt  DateTime  @default(now())
+}
+
+model Product {
+  id           String   @id @default(uuid())
+  name         String
+  slug         String   @unique
+  description  String?
+  categoryId   String
+  category     Category @relation(fields: [categoryId], references: [id])
+  seriesId     String?
+  series       Series?  @relation(fields: [seriesId], references: [id])
+  specs        Json?
+  soldQuantity Int      @default(0)
+
+  // Các cờ đánh dấu vị trí hiển thị ngoài Client
+  isFeatured  Boolean @default(false) // Sản phẩm nổi bật
+  isFlashSale Boolean @default(false) // Khối Flash Sale giá sốc
+  isHot       Boolean @default(false) // Khối Bán chạy
+
+  variants  ProductVariant[]
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+}
+
+model ProductVariant {
+  id            String      @id @default(uuid())
+  productId     String
+  product       Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storage       String
+  color         String
+  colorHex      String?
+  slug          String
+  sku           String?     @unique
+  price         Float
+  originalPrice Float
+  stock         Int         @default(10)
+  images        String[]
+  orderItems    OrderItem[]
+  createdAt     DateTime    @default(now())
+
+  @@unique([productId, slug])
+}
+
+model Order {
+  id             String      @id @default(uuid())
+  orderCode      String      @unique
+  customerName   String
+  customerPhone  String
+  customerEmail  String?
+  gender         String      @default("anh")
+  deliveryMethod String
+  province       String?
+  district       String?
+  address        String?
+  storeAddress   String?
+  note           String?
+  paymentMethod  String
+  paymentStatus  String      @default("PENDING") // PENDING, PAID, REFUNDED
+  orderStatus    String      @default("CONFIRMED") // CONFIRMED, SHIPPING, COMPLETED, CANCELLED
+  subTotal       Float
+  discountAmount Float       @default(0)
+  shippingFee    Float       @default(0)
+  totalAmount    Float
+  needVat        Boolean     @default(false)
+  vatInfo        Json?
+  userId         String?
+  user           User?       @relation(fields: [userId], references: [id])
+  items          OrderItem[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+}
+
+model OrderItem {
+  id          String         @id @default(uuid())
+  orderId     String
+  order       Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variantId   String
+  variant     ProductVariant @relation(fields: [variantId], references: [id])
+  productName String
+  storage     String
+  color       String
+  price       Float
+  quantity    Int
+  imageUrl    String
+}
+
+// Bảng Bài viết chuẩn SEO
+model Post {
+  id        String   @id @default(uuid())
+  title     String
+  slug      String   @unique
+  summary   String?  @db.Text
+  content   String   @db.Text
+  thumbnail String?
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id])
+  metaTitle String?
+  metaDesc  String?
+  published Boolean  @default(true)
+  views     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Bảng Banner Trang chủ & Danh mục
+model Banner {
+  id        String   @id @default(uuid())
+  title     String
+  imageUrl  String
+  linkUrl   String?
+  position  String   @default("HOME_TOP") // HOME_TOP, HOME_MIDDLE, CATEGORY_IPHONE,...
+  isActive  Boolean  @default(true)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  userId    String
+  variantId String
+  name      String
+  price     Float
+  storage   String?
+  color     String?
+  imageUrl  String?
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, variantId])
+}
