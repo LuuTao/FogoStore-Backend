@@ -26,14 +26,15 @@ model User {
 }
 
 model Category {
-  id        String    @id @default(uuid())
-  name      String
-  slug      String    @unique
-  series    Series[]
-  products  Product[]
+  id            String        @id @default(uuid())
+  name          String
+  slug          String        @unique
+  series        Series[]
+  products      Product[]
   subCategories SubCategory[]
-  createdAt DateTime  @default(now())
+  createdAt     DateTime      @default(now())
 }
+
 model SubCategory {
   id          String   @id @default(uuid())
   name        String   // Tên hiển thị (Ví dụ: "iPhone 17 Series")
@@ -57,25 +58,25 @@ model Series {
 }
 
 model Product {
-  id           String   @id @default(uuid())
+  id           String           @id @default(uuid())
   name         String
-  slug         String   @unique
+  slug         String           @unique
   description  String?
   categoryId   String
-  category     Category @relation(fields: [categoryId], references: [id])
+  category     Category         @relation(fields: [categoryId], references: [id])
   seriesId     String?
-  series       Series?  @relation(fields: [seriesId], references: [id])
+  series       Series?          @relation(fields: [seriesId], references: [id])
   specs        Json?
-  soldQuantity Int      @default(0)
+  soldQuantity Int              @default(0)
 
   // Các cờ đánh dấu vị trí hiển thị ngoài Client
-  isFeatured  Boolean @default(false) // Sản phẩm nổi bật
-  isFlashSale Boolean @default(false) // Khối Flash Sale giá sốc
-  isHot       Boolean @default(false) // Khối Bán chạy
+  isFeatured   Boolean          @default(false) // Sản phẩm nổi bật
+  isFlashSale  Boolean          @default(false) // Khối Flash Sale giá sốc
+  isHot        Boolean          @default(false) // Khối Bán chạy
 
-  variants  ProductVariant[]
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+  variants     ProductVariant[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 }
 
 model ProductVariant {
