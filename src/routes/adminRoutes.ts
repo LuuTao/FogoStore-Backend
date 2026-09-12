@@ -20,6 +20,7 @@ import {
   upsertSubCategory,
   deleteSubCategory,
 } from '../controllers/adminController';
+import { syncBanners } from '../controllers/contentController';
 
 const router = Router();
 
@@ -51,5 +52,6 @@ router.delete('/banners/:id', deleteBanner);
 router.get('/orders', getAdminOrders);
 router.patch('/orders/:id', updateOrderStatus);
 router.get('/analytics', getAnalytics);
+router.post('/banners/sync', syncBanners);
 
 export default router;
