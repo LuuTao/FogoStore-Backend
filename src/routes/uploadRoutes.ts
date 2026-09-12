@@ -4,19 +4,23 @@ import { uploadImage } from '../lib/multer';
 const router = Router();
 
 // Ưu tiên biến môi trường SERVER_URL / RENDER_EXTERNAL_URL (Render tự sinh), nếu không có thì trỏ về domain Render thật
+// Gán cứng fallback HTTPS của Render để tránh mọi lỗi nhận diện host sai
 const getBaseUrl = (req: any) => {
   if (process.env.SERVER_URL) return process.env.SERVER_URL.replace(/\/$/, '');
   if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
-  
-  // Khi chạy production trên Render
-  if (process.env.NODE_ENV === 'production') {
+
+  // Nếu deploy Render hoặc production:
+  if (process.env.NODE_ENV === 'production' || req.get('host')?.includes('onrender.com')) {
     return 'https://fogo-store-api.onrender.com';
   }
 
-  // Khi chạy localhost ở máy
-  return `${req.protocol}://${req.get('host')}`;
+  // Chỉ dùng khi chạy local máy bạn:
+  const host = req.get('host');
+  if (host && !host.includes('localhost')) {
+    return `https://${host}`;
+  }
+  return 'https://fogo-store-api.onrender.com'; // Mặc định an toàn tuyệt đối
 };
-
 router.post('/upload', uploadImage.single('image'), (req: any, res) => {
   try {
     if (!req.file) {
