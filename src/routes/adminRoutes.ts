@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { uploadFile } from '../lib/multer';
+import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
 import {
   getInventory,
   createFullProduct,
@@ -15,30 +15,41 @@ import {
   importHaravanPosts,
   createBannersBulk,
   deleteBanner,
+  cleanupCategories,
+  getSubCategories,
+  upsertSubCategory,
+  deleteSubCategory,
 } from '../controllers/adminController';
 
 const router = Router();
 
-// Kho hàng & Biến thể
+// 1. Quản trị sản phẩm & Biến thể
 router.get('/inventory', getInventory);
-router.post('/inventory/variant', addVariant);
-router.put('/inventory/:id', updateVariant);
-router.patch('/inventory/:variantId', patchVariant);
-router.delete('/inventory/:variantId', deleteVariant);
-
-// Sản phẩm
-router.post('/products/full', createFullProduct);
+router.post('/products/full', uploadImage.array('images', 8), createFullProduct);
 router.delete('/products/:id', deleteProduct);
-router.post('/products/import-excel', uploadFile.single('file'), importExcel);
+router.post('/variants', uploadImage.single('image'), addVariant);
+router.put('/variants/:id', uploadImage.array('images', 8), updateVariant);
+router.patch('/variants/:variantId', patchVariant);
+router.delete('/variants/:variantId', deleteVariant);
 
-// Đơn hàng & Thống kê
-router.get('/analytics', getAnalytics);
-router.get('/orders', getAdminOrders);
-router.patch('/orders/:id/status', updateOrderStatus);
-
-// Bài viết & Banner
+// 2. Import Excel & Haravan
+router.post('/products/import-excel', uploadMemory.single('file'), importExcel);
 router.post('/posts/import-haravan', uploadFile.single('file'), importHaravanPosts);
+
+// 3. Dọn dẹp danh mục rác cũ
+router.get('/categories/cleanup', cleanupCategories);
+router.delete('/categories/cleanup', cleanupCategories);
+
+// 4. Quản lý SubCategory (Icon lọc tròn dòng máy)
+router.get('/subcategories', getSubCategories);
+router.post('/subcategories', upsertSubCategory);
+router.delete('/subcategories/:id', deleteSubCategory);
+
+// 5. Banners & Đơn hàng & Thống kê
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
+router.get('/orders', getAdminOrders);
+router.patch('/orders/:id', updateOrderStatus);
+router.get('/analytics', getAnalytics);
 
 export default router;

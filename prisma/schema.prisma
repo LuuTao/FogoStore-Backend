@@ -31,7 +31,19 @@ model Category {
   slug      String    @unique
   series    Series[]
   products  Product[]
+  subCategories SubCategory[]
   createdAt DateTime  @default(now())
+}
+model SubCategory {
+  id          String   @id @default(uuid())
+  name        String   // Tên hiển thị (Ví dụ: "iPhone 17 Series")
+  slug        String   // Slug (Ví dụ: "iphone-17-series")
+  imageUrl    String?  // Link ảnh icon tròn
+  keyword     String   // Từ khóa nhận diện sản phẩm (Ví dụ: "17", "17 Pro", "M3")
+  order       Int      @default(0)
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
 }
 
 model Series {

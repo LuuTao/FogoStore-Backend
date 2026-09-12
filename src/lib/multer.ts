@@ -20,3 +20,6 @@ const storage = multer.diskStorage({
 
 export const uploadImage = multer({ storage });
 export const uploadFile = multer({ dest: uploadDir });
+
+// Thêm cấu hình lưu vào RAM cho việc đọc Excel bằng ExcelJS
+export const uploadMemory = multer({ storage: multer.memoryStorage() });

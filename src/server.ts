@@ -37,7 +37,6 @@ app.use('/api/products', productRoutes);   // /api/products, /api/products/filte
 app.use('/api/orders', orderRoutes);       // /api/orders
 app.use('/api', contentRoutes);            // /api/posts, /api/banners
 app.use('/api/admin', adminRoutes);        // /api/admin/inventory, /api/admin/analytics,...
-app.use('/api/cart', require('./routes/cart'));
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server Backend đang chạy tại cổng ${PORT} (sẵn sàng nhận kết nối từ mọi thiết bị)`);

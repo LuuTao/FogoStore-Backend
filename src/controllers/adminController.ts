@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import xlsx from 'node-xlsx';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
@@ -80,8 +81,9 @@ export const createFullProduct = async (req: Request, res: Response) => {
 // 3. Xóa sản phẩm gốc
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
-    await prisma.productVariant.deleteMany({ where: { productId: req.params.id } });
-    await prisma.product.delete({ where: { id: req.params.id } });
+    const id = req.params.id as string;
+    await prisma.productVariant.deleteMany({ where: { productId: id } });
+    await prisma.product.delete({ where: { id } });
     return res.json({ success: true, message: 'Đã xóa toàn bộ sản phẩm thành công' });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -118,10 +120,10 @@ export const addVariant = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Cập nhật biến thể (Hỗ trợ String[] images an toàn)
+// 5. Cập nhật biến thể
 export const updateVariant = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { storage, color, price, originalPrice, stock, images } = req.body;
 
     let formattedImages: string[] = [];
@@ -160,7 +162,7 @@ export const patchVariant = async (req: Request, res: Response) => {
   try {
     const { stock, price } = req.body;
     const updated = await prisma.productVariant.update({
-      where: { id: req.params.variantId },
+      where: { id: req.params.variantId as string },
       data: {
         ...(stock !== undefined && { stock: Number(stock) }),
         ...(price !== undefined && { price: Number(price) }),
@@ -175,7 +177,7 @@ export const patchVariant = async (req: Request, res: Response) => {
 // 7. Xóa biến thể lẻ
 export const deleteVariant = async (req: Request, res: Response) => {
   try {
-    await prisma.productVariant.delete({ where: { id: req.params.variantId } });
+    await prisma.productVariant.delete({ where: { id: req.params.variantId as string } });
     return res.json({ success: true, message: 'Đã xóa biến thể thành công' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -185,50 +187,90 @@ export const deleteVariant = async (req: Request, res: Response) => {
 // 8. Import sản phẩm từ Excel
 export const importExcel = async (req: any, res: Response) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, error: 'Chưa đính kèm file Excel' });
+    let fileBuffer: Buffer | null = null;
 
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(req.file.path);
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet) return res.status(400).json({ success: false, error: 'File không có dữ liệu' });
+    if (req.file?.buffer) {
+      fileBuffer = req.file.buffer;
+    } else if (req.file?.path && fs.existsSync(req.file.path)) {
+      fileBuffer = fs.readFileSync(req.file.path);
+      fs.unlinkSync(req.file.path);
+    }
 
-    const headers: { [colNumber: number]: string } = {};
-    worksheet.getRow(1).eachCell((cell, colNumber) => {
-      headers[colNumber] = cell.value ? cell.value.toString().trim() : '';
-    });
+    if (!fileBuffer) {
+      return res.status(400).json({ success: false, error: 'Chưa đính kèm file Excel hợp lệ' });
+    }
 
-    let count = 0;
-    for (let r = 2; r <= worksheet.rowCount; r++) {
-      const row = worksheet.getRow(r);
-      if (!row.hasValues) continue;
-      const d: any = {};
-      row.eachCell((cell, colNumber) => {
-        const h = headers[colNumber];
-        if (h) {
-          const val = cell.value;
-          d[h] = typeof val === 'object' && val !== null && 'result' in val ? (val as any).result : val;
-        }
+    const workSheets = xlsx.parse(fileBuffer);
+    if (!workSheets || workSheets.length === 0) {
+      return res.status(400).json({ success: false, error: 'File Excel không có dữ liệu' });
+    }
+
+    const sheetData = workSheets[0].data as any[][];
+    if (!sheetData || sheetData.length < 2) {
+      return res.status(400).json({ success: false, error: 'Bảng tính rỗng hoặc thiếu dòng dữ liệu' });
+    }
+
+    const rawHeaders = sheetData[0].map((h) => (h ? h.toString().trim() : ''));
+
+    let importedCount = 0;
+    let variantCount = 0;
+
+    for (let r = 1; r < sheetData.length; r++) {
+      const row = sheetData[r];
+      if (!row || row.length === 0) continue;
+
+      const d: Record<string, any> = {};
+      rawHeaders.forEach((header, index) => {
+        if (header) d[header] = row[index];
       });
 
-      const name = d['Tên'] || d['name'];
-      const catName = d['Danh Mục'] || d['category'] || 'iPhone';
-      const storage = d['Dung Lượng'] || d['storage'] || '128GB';
-      const color = d['Màu Sắc'] || d['color'] || 'Đen';
-      const price = Number(d['Giá Bán'] || d['price'] || 0);
-      const originalPrice = Number(d['Giá Gốc'] || d['originalPrice'] || price);
-      const stock = Number(d['Tồn Kho'] || d['stock'] || 10);
-      const imageUrl = d['Ảnh'] || d['imageUrl'] || '';
+      const fullName = (d['Tên'] || d['name'] || '').toString().trim();
+      if (!fullName) continue;
 
-      if (!name || !price) continue;
+      const storageMatch = fullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i);
+      const storage = storageMatch ? storageMatch[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
 
-      let cat = await prisma.category.findFirst({ where: { name: catName } });
-      if (!cat) {
-        cat = await prisma.category.create({
-          data: { name: catName, slug: catName.toLowerCase().replace(/[^a-z0-9]+/g, '-') },
-        });
+      const cleanName = fullName
+        .replace(/\b(\d+\s*(?:GB|TB)(\s*\/\s*(?:\d+\s*)?(?:GB|TB))?)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const rawCategory = (d['Loại sản phẩm'] || d['Danh Mục'] || d['category'] || '').toString().toLowerCase();
+      const combinedText = `${rawCategory} ${fullName.toLowerCase()}`;
+      const isUsed = combinedText.includes('cũ') || combinedText.includes('like new') || combinedText.includes('99%');
+
+      let standardCategoryName = 'Phụ kiện';
+      if (combinedText.includes('iphone')) {
+        standardCategoryName = isUsed ? 'iPhone Cũ' : 'iPhone';
+      } else if (combinedText.includes('macbook') || combinedText.includes('mac')) {
+        standardCategoryName = isUsed ? 'MacBook Cũ' : 'MacBook';
+      } else if (combinedText.includes('ipad')) {
+        standardCategoryName = isUsed ? 'iPad Cũ' : 'iPad';
+      } else if (combinedText.includes('watch')) {
+        standardCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
+      } else if (
+        combinedText.includes('pencil') ||
+        combinedText.includes('keyboard') ||
+        combinedText.includes('sạc') ||
+        combinedText.includes('tai nghe') ||
+        combinedText.includes('airpods') ||
+        combinedText.includes('phụ kiện')
+      ) {
+        standardCategoryName = 'Phụ kiện';
       }
 
-      const cleanSlug = name
+      let cat = await prisma.category.findFirst({ where: { name: standardCategoryName } });
+      if (!cat) {
+        const catSlug = standardCategoryName
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[đĐ]/g, 'd')
+          .replace(/[^a-z0-9]+/g, '-');
+        cat = await prisma.category.create({ data: { name: standardCategoryName, slug: catSlug } });
+      }
+
+      const parentSlug = cleanName
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
@@ -236,19 +278,41 @@ export const importExcel = async (req: any, res: Response) => {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
 
-      const variantSlug = `${storage.toLowerCase()}-${color.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').replace(/[^a-z0-9]+/g, '-')}`;
-
-      let prod = await prisma.product.findUnique({ where: { slug: cleanSlug } });
+      let prod = await prisma.product.findUnique({ where: { slug: parentSlug } });
       if (!prod) {
         prod = await prisma.product.create({
           data: {
-            name,
-            slug: cleanSlug,
+            name: cleanName,
+            slug: parentSlug,
             categoryId: cat.id,
-            description: `Mô tả chính hãng của ${name}`,
+            description: d['Mô tả'] || `Sản phẩm chính hãng ${cleanName} tại Fogo Store`,
+          },
+        });
+        importedCount++;
+      } else {
+        prod = await prisma.product.update({
+          where: { id: prod.id },
+          data: {
+            categoryId: cat.id,
+            description: d['Mô tả'] || prod.description,
           },
         });
       }
+
+      let color = d['Màu Sắc'] || d['color'] || 'Tiêu chuẩn';
+      if (d['Thuộc tính 1'] === 'Color' && d['Giá trị thuộc tính 1']) color = d['Giá trị thuộc tính 1'];
+      else if (d['Thuộc tính 2'] === 'Color' && d['Giá trị thuộc tính 2']) color = d['Giá trị thuộc tính 2'];
+      else if (d['Thuộc tính 3'] === 'Color' && d['Giá trị thuộc tính 3']) color = d['Giá trị thuộc tính 3'];
+      else if (d['Giá trị thuộc tính 1']) color = d['Giá trị thuộc tính 1'];
+
+      const price = Number(d['Giá'] || d['Giá Bán'] || d['price'] || 0);
+      const originalPrice = Number(d['Giá so sánh'] || d['Giá Gốc'] || price);
+      const stock = Number(d['Số lượng tồn kho'] || d['Tồn Kho'] || 10);
+      const imageUrl = (d['Ảnh biến thể'] || d['Link hình'] || d['Ảnh'] || '').toString().trim();
+
+      const cleanColorSlug = color.toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').replace(/[^a-z0-9]+/g, '-');
+      const cleanStorageSlug = storage.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
 
       const existingVariant = await prisma.productVariant.findFirst({
         where: { productId: prod.id, slug: variantSlug },
@@ -261,7 +325,7 @@ export const importExcel = async (req: any, res: Response) => {
             price,
             originalPrice,
             stock,
-            images: imageUrl ? [imageUrl] : existingVariant.images,
+            images: imageUrl ? Array.from(new Set([...existingVariant.images, imageUrl])) : existingVariant.images,
           },
         });
       } else {
@@ -278,19 +342,121 @@ export const importExcel = async (req: any, res: Response) => {
           },
         });
       }
-      count++;
+      variantCount++;
     }
 
-    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-
-    return res.json({ success: true, message: `Nhập thành công ${count} cấu hình sản phẩm từ file Excel!` });
+    return res.json({
+      success: true,
+      message: `Đã gom nhóm thành công! Tạo ${importedCount} dòng sản phẩm chính và ${variantCount} phiên bản biến thể dung lượng/màu.`,
+    });
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
     return res.status(500).json({ success: false, error: 'Lỗi xử lý file Excel: ' + err.message });
   }
 };
 
-// 9. Thống kê Analytics
+// 9. Dọn dẹp danh mục rác cũ
+export const cleanupCategories = async (req: Request, res: Response) => {
+  try {
+    const validCategories = [
+      'iPhone',
+      'iPhone Cũ',
+      'MacBook',
+      'MacBook Cũ',
+      'iPad',
+      'iPad Cũ',
+      'Watch',
+      'Watch Cũ',
+      'Phụ kiện',
+    ];
+
+    const deleted = await prisma.category.deleteMany({
+      where: {
+        name: {
+          notIn: validCategories,
+        },
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: `Đã dọn dẹp thành công! Đã xóa ${deleted.count} danh mục rác cũ.`,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 10. Quản lý SubCategory
+export const getSubCategories = async (req: Request, res: Response) => {
+  try {
+    const { categoryId } = req.query;
+    const subs = await prisma.subCategory.findMany({
+      where: categoryId ? { categoryId: String(categoryId) } : undefined,
+      orderBy: { order: 'asc' },
+      include: { category: true },
+    });
+    return res.json({ success: true, data: subs });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const upsertSubCategory = async (req: Request, res: Response) => {
+  try {
+    const { id, name, categoryId, imageUrl, keyword, order } = req.body;
+    if (!name || !categoryId) {
+      return res.status(400).json({ success: false, error: 'Thiếu tên hoặc danh mục cha' });
+    }
+
+    const slug = name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
+      .replace(/[^a-z0-9]+/g, '-');
+
+    if (id) {
+      const updated = await prisma.subCategory.update({
+        where: { id: id as string },
+        data: {
+          name,
+          slug,
+          categoryId,
+          imageUrl,
+          keyword: keyword || name,
+          order: Number(order || 0),
+        },
+      });
+      return res.json({ success: true, data: updated });
+    }
+
+    const created = await prisma.subCategory.create({
+      data: {
+        name,
+        slug,
+        categoryId,
+        imageUrl,
+        keyword: keyword || name,
+        order: Number(order || 0),
+      },
+    });
+    return res.status(201).json({ success: true, data: created });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const deleteSubCategory = async (req: Request, res: Response) => {
+  try {
+    await prisma.subCategory.delete({ where: { id: req.params.id as string } });
+    return res.json({ success: true, message: 'Đã xóa item lọc thành công' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 11. Thống kê Analytics
 export const getAnalytics = async (req: Request, res: Response) => {
   try {
     const completedOrders = await prisma.order.findMany({
@@ -324,7 +490,7 @@ export const getAnalytics = async (req: Request, res: Response) => {
   }
 };
 
-// 10. Quản lý Đơn hàng cho Admin
+// 12. Quản lý đơn hàng
 export const getAdminOrders = async (req: Request, res: Response) => {
   try {
     const orders = await prisma.order.findMany({ include: { items: true }, orderBy: { createdAt: 'desc' } });
@@ -338,7 +504,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
   try {
     const { orderStatus, paymentStatus } = req.body;
     const updated = await prisma.order.update({
-      where: { id: req.params.id },
+      where: { id: req.params.id as string },
       data: { ...(orderStatus && { orderStatus }), ...(paymentStatus && { paymentStatus }) },
     });
     return res.json({ success: true, data: updated });
@@ -347,12 +513,12 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
   }
 };
 
-// 11. Import bài viết Haravan
+// 13. Import bài viết Haravan
 export const importHaravanPosts = async (req: any, res: Response) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'Chưa đính kèm file Haravan' });
     const workbook = new ExcelJS.Workbook();
-    if (req.file.originalname.endsWith('.csv')) await workbook.csv.readFile(req.file.path);
+    if (req.file.originalname?.endsWith('.csv')) await workbook.csv.readFile(req.file.path);
     else await workbook.xlsx.readFile(req.file.path);
 
     const worksheet = workbook.worksheets[0];
@@ -390,7 +556,7 @@ export const importHaravanPosts = async (req: any, res: Response) => {
   }
 };
 
-// 12. Quản lý Banners
+// 14. Quản lý Banners
 export const createBannersBulk = async (req: Request, res: Response) => {
   try {
     const { banners } = req.body;
@@ -414,6 +580,10 @@ export const createBannersBulk = async (req: Request, res: Response) => {
 };
 
 export const deleteBanner = async (req: Request, res: Response) => {
-  await prisma.banner.delete({ where: { id: req.params.id } });
-  return res.json({ success: true, message: 'Đã xóa banner' });
+  try {
+    await prisma.banner.delete({ where: { id: req.params.id as string } });
+    return res.json({ success: true, message: 'Đã xóa banner' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 };

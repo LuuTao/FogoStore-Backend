@@ -3,9 +3,8 @@ import { prisma } from '../lib/prisma';
 
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
-    // Sửa tên biến từ product thành products để khớp với response bên dưới
     const products = await prisma.product.findMany({
-        include: { category: true, variants: true }
+      include: { category: true, variants: true }
     });
     return res.json({ success: true, data: products });
   } catch (error: any) {
@@ -38,32 +37,67 @@ export const filterProducts = async (req: Request, res: Response) => {
 
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
-    const rawSlug = String(req.params.slug).trim();
-    const baseSlug = rawSlug.replace(
-      /-(64gb|128gb|256gb|512gb|1tb|2tb|40mm|41mm|42mm|44mm|45mm|46mm|49mm)$/i,
+    const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim();
+    const proid = req.query.proid ? String(req.query.proid).trim() : '';
+
+    const cleanBaseSlug = rawSlug.replace(
+      /(-(8gb|16gb|24gb|32gb|64gb|128gb|256gb|512gb|1tb|2tb|40mm|41mm|42mm|44mm|45mm|46mm|49mm))+$/gi,
       ''
     );
 
-    // XÓA BỎ { contains: baseSlug } ĐỂ TRÁNH TÌNH TRẠNG QUÉT NHẦM SẢN PHẨM CÓ CHUỖI GẦN ĐÚNG
-    let product = await prisma.product.findFirst({
-      where: {
-        OR: [
-          { slug: rawSlug },
-          { slug: baseSlug },
-        ],
-      },
-      include: {
-        category: true,
-        variants: true,
-      },
-    });
+    let product = null;
+
+    // 1. Ưu tiên tìm chính xác theo proid (ID sản phẩm gốc)
+    if (proid) {
+      product = await prisma.product.findUnique({
+        where: { id: proid },
+        include: { category: true, variants: true },
+      });
+    }
+
+    // 2. Tìm theo cleanBaseSlug hoặc rawSlug
+    if (!product) {
+      product = await prisma.product.findFirst({
+        where: {
+          OR: [
+            { slug: cleanBaseSlug },
+            { slug: rawSlug },
+            { slug: { startsWith: cleanBaseSlug } }
+          ],
+        },
+        include: { category: true, variants: true },
+      });
+    }
+
+    // 3. Dự phòng tìm qua slug của biến thể (Variant)
+    if (!product) {
+      const variant = await prisma.productVariant.findFirst({
+        where: {
+          OR: [
+            { slug: cleanBaseSlug },
+            { slug: rawSlug },
+            { slug: { contains: cleanBaseSlug } }
+          ],
+        },
+        include: {
+          product: {
+            include: { category: true, variants: true },
+          },
+        },
+      });
+      if (variant) {
+        product = variant.product;
+      }
+    }
 
     if (!product) {
+      console.warn(`[API] Không tìm thấy sản phẩm với slug: "${rawSlug}", base: "${cleanBaseSlug}", proid: "${proid}"`);
       return res.status(404).json({ success: false, error: 'Không tìm thấy sản phẩm' });
     }
 
+    // Format an toàn danh sách ảnh biến thể (khai báo imgs: any để xử lý string hoặc string[])
     const parsedVariants = product.variants.map((v) => {
-      let imgs = v.images;
+      let imgs: any = v.images;
       if (typeof imgs === 'string') {
         try {
           imgs = JSON.parse(imgs);

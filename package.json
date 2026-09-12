@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "push": "git add . && git commit -m \"auto update backend\" && git push origin main"
   },
   "keywords": [],
   "author": "",
@@ -17,11 +18,12 @@
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "exceljs": "^3.4.0",
+    "exceljs": "^3.10.0",
     "express": "^5.2.1",
     "google-auth-library": "^11.0.2",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
+    "node-xlsx": "^0.24.0",
     "nodemailer": "^10.0.1"
   },
   "devDependencies": {
