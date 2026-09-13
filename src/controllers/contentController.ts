@@ -12,8 +12,9 @@ export const getPosts = async (req: Request, res: Response) => {
 
 export const getBanners = async (req: Request, res: Response) => {
   try {
+    // Luôn lấy toàn bộ banner theo thứ tự order
     const banners = await prisma.banner.findMany({
-      orderBy: { id: 'asc' },
+      orderBy: { order: 'asc' },
     });
     return res.json({ success: true, data: banners });
   } catch (error: any) {
@@ -28,16 +29,21 @@ export const syncBanners = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Dữ liệu không hợp lệ' });
     }
 
-    const sanitizedItems = items.map((it: any, index: number) => ({
-      title: it.name || it.title || 'Banner',
-      imageUrl: String(it.imageUrl || '').replace(
-        /http:\/\/localhost:[0-9]+/g,
-        'https://fogo-store-api.onrender.com'
-      ),
-      link: it.link || '/',
-      isActive: true,
-      order: index,
-    }));
+    const sanitizedItems = items.map((it: any, index: number) => {
+      let rawUrl = String(it.imageUrl || '');
+      if (rawUrl.includes('/uploads/')) {
+        rawUrl = '/uploads/' + rawUrl.split('/uploads/').pop();
+      }
+
+      return {
+        title: it.name || it.title || 'Banner',
+        imageUrl: rawUrl,
+        link: it.link || '/',
+        group: it.group || 'hero_banners',
+        isActive: true,
+        order: index,
+      };
+    });
 
     await prisma.$transaction([
       prisma.banner.deleteMany({}),
@@ -46,9 +52,8 @@ export const syncBanners = async (req: Request, res: Response) => {
       }),
     ]);
 
-    return res.json({ success: true, message: 'Đã lưu banner vào Database thành công!' });
+    return res.json({ success: true, message: 'Đã lưu cấu hình banner vào Database thành công!' });
   } catch (error: any) {
-    console.error('Lỗi sync banner:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
