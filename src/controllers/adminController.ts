@@ -4,7 +4,7 @@ import ExcelJS from 'exceljs';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
 
-// 1. Tồn kho
+// 1. Lấy tồn kho & biến thể sản phẩm
 export const getInventory = async (req: Request, res: Response) => {
   try {
     const variants = await prisma.productVariant.findMany({
@@ -13,7 +13,7 @@ export const getInventory = async (req: Request, res: Response) => {
           include: { category: true },
         },
       },
-      orderBy: { stock: 'asc' },
+      orderBy: { createdAt: 'desc' },
     });
     return res.json({ success: true, data: variants });
   } catch (err: any) {
@@ -27,7 +27,10 @@ export const createFullProduct = async (req: Request, res: Response) => {
     const { name, categoryName, description, isFeatured, isFlashSale, isHot, variants } = req.body;
 
     if (!name || !categoryName || !variants || variants.length === 0) {
-      return res.status(400).json({ success: false, error: 'Vui lòng nhập tên sản phẩm, danh mục và ít nhất 1 biến thể' });
+      return res.status(400).json({
+        success: false,
+        error: 'Vui lòng nhập tên sản phẩm, danh mục và ít nhất 1 biến thể',
+      });
     }
 
     let cat = await prisma.category.findFirst({ where: { name: categoryName } });
@@ -59,13 +62,15 @@ export const createFullProduct = async (req: Request, res: Response) => {
         isHot: Boolean(isHot),
         variants: {
           create: variants.map((v: any) => ({
-            storage: v.storage,
-            color: v.color,
-            slug: `${v.storage.toLowerCase()}-${v.color.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-3)}`,
-            price: Number(v.price),
-            originalPrice: Number(v.originalPrice || v.price),
+            storage: v.storage || 'Tiêu chuẩn',
+            color: v.color || 'Tiêu chuẩn',
+            slug: `${(v.storage || 'tc').toLowerCase()}-${(v.color || 'tc')
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-3)}`,
+            price: Number(v.price || 0),
+            originalPrice: Number(v.originalPrice || v.price || 0),
             stock: Number(v.stock || 0),
-            images: v.imageUrl ? [v.imageUrl] : [],
+            images: v.imageUrl ? [v.imageUrl] : Array.isArray(v.images) ? v.images : [],
           })),
         },
       },
@@ -98,7 +103,9 @@ export const addVariant = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Vui lòng điền đủ thông tin bắt buộc' });
     }
 
-    const variantSlug = `${storage.toLowerCase()}-${color.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
+    const variantSlug = `${storage.toLowerCase()}-${color
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
 
     const newVariant = await prisma.productVariant.create({
       data: {
@@ -120,10 +127,10 @@ export const addVariant = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Cập nhật biến thể
+// 5. Cập nhật biến thể (Sửa cấu hình trên Modal Admin)
 export const updateVariant = async (req: Request, res: Response) => {
   try {
-    const id = req.params.id as string;
+    const id = (req.params.id || req.params.variantId) as string;
     const { storage, color, price, originalPrice, stock, images } = req.body;
 
     let formattedImages: string[] = [];
@@ -141,28 +148,32 @@ export const updateVariant = async (req: Request, res: Response) => {
     const updated = await prisma.productVariant.update({
       where: { id },
       data: {
-        ...(storage && { storage }),
-        ...(color && { color }),
-        ...(price !== undefined && { price: Number(price) }),
-        ...(originalPrice !== undefined && { originalPrice: Number(originalPrice) }),
-        ...(stock !== undefined && { stock: Number(stock) }),
+        ...(storage !== undefined && { storage: String(storage) }),
+        ...(color !== undefined && { color: String(color) }),
+        ...(price !== undefined && { price: parseFloat(price) }),
+        ...(originalPrice !== undefined && { originalPrice: parseFloat(originalPrice) }),
+        ...(stock !== undefined && { stock: parseInt(stock, 10) }),
         ...(formattedImages.length > 0 && { images: formattedImages }),
+      },
+      include: {
+        product: { include: { category: true } },
       },
     });
 
-    return res.json({ success: true, data: updated });
+    return res.json({ success: true, message: 'Đã lưu cấu hình biến thể vào Database!', data: updated });
   } catch (error: any) {
     console.error('Lỗi cập nhật biến thể:', error);
-    return res.status(500).json({ success: false, error: 'Lỗi cập nhật biến thể' });
+    return res.status(500).json({ success: false, error: error.message || 'Lỗi cập nhật biến thể' });
   }
 };
 
 // 6. Cập nhật nhanh tồn kho (PATCH)
 export const patchVariant = async (req: Request, res: Response) => {
   try {
+    const id = (req.params.variantId || req.params.id) as string;
     const { stock, price } = req.body;
     const updated = await prisma.productVariant.update({
-      where: { id: req.params.variantId as string },
+      where: { id },
       data: {
         ...(stock !== undefined && { stock: Number(stock) }),
         ...(price !== undefined && { price: Number(price) }),
@@ -174,11 +185,12 @@ export const patchVariant = async (req: Request, res: Response) => {
   }
 };
 
-// 7. Xóa biến thể lẻ
+// 7. Xóa biến thể
 export const deleteVariant = async (req: Request, res: Response) => {
   try {
-    await prisma.productVariant.delete({ where: { id: req.params.variantId as string } });
-    return res.json({ success: true, message: 'Đã xóa biến thể thành công' });
+    const id = (req.params.variantId || req.params.id) as string;
+    await prisma.productVariant.delete({ where: { id } });
+    return res.json({ success: true, message: 'Đã xóa biến thể thành công khỏi Database' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -248,15 +260,6 @@ export const importExcel = async (req: any, res: Response) => {
         standardCategoryName = isUsed ? 'iPad Cũ' : 'iPad';
       } else if (combinedText.includes('watch')) {
         standardCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
-      } else if (
-        combinedText.includes('pencil') ||
-        combinedText.includes('keyboard') ||
-        combinedText.includes('sạc') ||
-        combinedText.includes('tai nghe') ||
-        combinedText.includes('airpods') ||
-        combinedText.includes('phụ kiện')
-      ) {
-        standardCategoryName = 'Phụ kiện';
       }
 
       let cat = await prisma.category.findFirst({ where: { name: standardCategoryName } });
@@ -289,28 +292,25 @@ export const importExcel = async (req: any, res: Response) => {
           },
         });
         importedCount++;
-      } else {
-        prod = await prisma.product.update({
-          where: { id: prod.id },
-          data: {
-            categoryId: cat.id,
-            description: d['Mô tả'] || prod.description,
-          },
-        });
       }
 
       let color = d['Màu Sắc'] || d['color'] || 'Tiêu chuẩn';
       if (d['Thuộc tính 1'] === 'Color' && d['Giá trị thuộc tính 1']) color = d['Giá trị thuộc tính 1'];
       else if (d['Thuộc tính 2'] === 'Color' && d['Giá trị thuộc tính 2']) color = d['Giá trị thuộc tính 2'];
       else if (d['Thuộc tính 3'] === 'Color' && d['Giá trị thuộc tính 3']) color = d['Giá trị thuộc tính 3'];
-      else if (d['Giá trị thuộc tính 1']) color = d['Giá trị thuộc tính 1'];
 
       const price = Number(d['Giá'] || d['Giá Bán'] || d['price'] || 0);
       const originalPrice = Number(d['Giá so sánh'] || d['Giá Gốc'] || price);
       const stock = Number(d['Số lượng tồn kho'] || d['Tồn Kho'] || 10);
       const imageUrl = (d['Ảnh biến thể'] || d['Link hình'] || d['Ảnh'] || '').toString().trim();
 
-      const cleanColorSlug = color.toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').replace(/[^a-z0-9]+/g, '-');
+      const cleanColorSlug = color
+        .toString()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[đĐ]/g, 'd')
+        .replace(/[^a-z0-9]+/g, '-');
       const cleanStorageSlug = storage.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
       const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
 
@@ -347,7 +347,7 @@ export const importExcel = async (req: any, res: Response) => {
 
     return res.json({
       success: true,
-      message: `Đã gom nhóm thành công! Tạo ${importedCount} dòng sản phẩm chính và ${variantCount} phiên bản biến thể dung lượng/màu.`,
+      message: `Đã gom nhóm thành công! Tạo ${importedCount} sản phẩm chính và ${variantCount} biến thể.`,
     });
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
@@ -355,7 +355,7 @@ export const importExcel = async (req: any, res: Response) => {
   }
 };
 
-// 9. Dọn dẹp danh mục rác cũ
+// 9. Dọn dẹp danh mục
 export const cleanupCategories = async (req: Request, res: Response) => {
   try {
     const validCategories = [
@@ -372,22 +372,20 @@ export const cleanupCategories = async (req: Request, res: Response) => {
 
     const deleted = await prisma.category.deleteMany({
       where: {
-        name: {
-          notIn: validCategories,
-        },
+        name: { notIn: validCategories },
       },
     });
 
     return res.json({
       success: true,
-      message: `Đã dọn dẹp thành công! Đã xóa ${deleted.count} danh mục rác cũ.`,
+      message: `Đã xóa ${deleted.count} danh mục cũ không hợp lệ.`,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// 10. Quản lý SubCategory
+// 10. SubCategory
 export const getSubCategories = async (req: Request, res: Response) => {
   try {
     const { categoryId } = req.query;
@@ -467,24 +465,32 @@ export const getAnalytics = async (req: Request, res: Response) => {
     const totalProducts = await prisma.product.count();
     const topSelling = await prisma.product.findMany({ take: 5, orderBy: { soldQuantity: 'desc' } });
 
-    const last7Days = [...Array(7)].map((_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      return d.toISOString().split('T')[0];
-    }).reverse();
+    const last7Days = [...Array(7)]
+      .map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        return d.toISOString().split('T')[0];
+      })
+      .reverse();
 
     const revenueByDay = await Promise.all(
       last7Days.map(async (day) => {
         const start = new Date(`${day}T00:00:00.000Z`);
         const end = new Date(`${day}T23:59:59.999Z`);
         const orders = await prisma.order.findMany({
-          where: { createdAt: { gte: start, lte: end }, OR: [{ orderStatus: 'COMPLETED' }, { paymentStatus: 'PAID' }] },
+          where: {
+            createdAt: { gte: start, lte: end },
+            OR: [{ orderStatus: 'COMPLETED' }, { paymentStatus: 'PAID' }],
+          },
         });
         return { date: day, total: orders.reduce((s, o) => s + o.totalAmount, 0), ordersCount: orders.length };
       })
     );
 
-    return res.json({ success: true, data: { totalRevenue, totalOrders, totalProducts, topSelling, revenueByDay } });
+    return res.json({
+      success: true,
+      data: { totalRevenue, totalOrders, totalProducts, topSelling, revenueByDay },
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -493,7 +499,10 @@ export const getAnalytics = async (req: Request, res: Response) => {
 // 12. Quản lý đơn hàng
 export const getAdminOrders = async (req: Request, res: Response) => {
   try {
-    const orders = await prisma.order.findMany({ include: { items: true }, orderBy: { createdAt: 'desc' } });
+    const orders = await prisma.order.findMany({
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
+    });
     return res.json({ success: true, data: orders });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -513,7 +522,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
   }
 };
 
-// 13. Import bài viết Haravan
+// 13. Haravan Posts
 export const importHaravanPosts = async (req: any, res: Response) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'Chưa đính kèm file Haravan' });
@@ -523,14 +532,18 @@ export const importHaravanPosts = async (req: any, res: Response) => {
 
     const worksheet = workbook.worksheets[0];
     const headers: any = {};
-    worksheet.getRow(1).eachCell((cell, col) => { headers[col] = cell.value?.toString().trim(); });
+    worksheet.getRow(1).eachCell((cell, col) => {
+      headers[col] = cell.value?.toString().trim();
+    });
 
     let count = 0;
     for (let r = 2; r <= worksheet.rowCount; r++) {
       const row = worksheet.getRow(r);
       if (!row.hasValues) continue;
       const d: any = {};
-      row.eachCell((cell, col) => { if (headers[col]) d[headers[col]] = cell.value; });
+      row.eachCell((cell, col) => {
+        if (headers[col]) d[headers[col]] = cell.value;
+      });
 
       const title = d['Title'] || d['Tiêu đề'] || d['Tên bài viết'];
       const rawHandle = d['Handle'] || d['Slug'] || d['Đường dẫn'];
@@ -556,7 +569,7 @@ export const importHaravanPosts = async (req: any, res: Response) => {
   }
 };
 
-// 14. Quản lý Banners
+// 14. Banners
 export const createBannersBulk = async (req: Request, res: Response) => {
   try {
     const { banners } = req.body;
@@ -566,8 +579,8 @@ export const createBannersBulk = async (req: Request, res: Response) => {
           data: {
             title: b.title || `Banner ${i + 1}`,
             imageUrl: b.imageUrl,
-            linkUrl: b.linkUrl || '/',
-            position: b.position || 'HOME_TOP',
+            linkUrl: b.linkUrl || b.link || '/',
+            position: b.position || b.group || 'HOME_TOP',
             order: Number(b.order ?? i),
           },
         })

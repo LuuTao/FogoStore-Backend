@@ -159,11 +159,10 @@ model Post {
   updatedAt DateTime @updatedAt
 }
 
-// Bảng Banner Trang chủ & Danh mục
 model Banner {
   id        String   @id @default(uuid())
   title     String
-  imageUrl  String
+  imageUrl  String   @db.Text
   linkUrl   String?
   position  String   @default("HOME_TOP") // HOME_TOP, HOME_MIDDLE, CATEGORY_IPHONE,...
   isActive  Boolean  @default(true)
