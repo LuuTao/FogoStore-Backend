@@ -496,28 +496,49 @@ export const getAnalytics = async (req: Request, res: Response) => {
   }
 };
 
-// 12. Quản lý đơn hàng
-export const getAdminOrders = async (req: Request, res: Response) => {
+// 12. Quản lý đơn hàng Admin (Đồng bộ chuẩn duy nhất)
+export const getAllOrdersAdmin = async (req: Request, res: Response) => {
   try {
     const orders = await prisma.order.findMany({
-      include: { items: true },
-      orderBy: { createdAt: 'desc' },
+      include: {
+        items: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
     });
-    return res.json({ success: true, data: orders });
+
+    return res.json({
+      success: true,
+      data: orders,
+    });
   } catch (error: any) {
+    console.error('Lỗi lấy danh sách đơn Admin:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-export const updateOrderStatus = async (req: Request, res: Response) => {
+export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
   try {
+    const { id } = req.params;
     const { orderStatus, paymentStatus } = req.body;
+
     const updated = await prisma.order.update({
-      where: { id: req.params.id as string },
-      data: { ...(orderStatus && { orderStatus }), ...(paymentStatus && { paymentStatus }) },
+      where: { id: String(id) }, // Ép kiểu string dứt điểm lỗi TypeScript
+      data: {
+        ...(orderStatus && { orderStatus }),
+        ...(paymentStatus && { paymentStatus }),
+      },
+      include: { items: true },
     });
-    return res.json({ success: true, data: updated });
+
+    return res.json({
+      success: true,
+      message: 'Cập nhật trạng thái đơn thành công',
+      data: updated,
+    });
   } catch (error: any) {
+    console.error('Lỗi update trạng thái đơn:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };

@@ -10,8 +10,6 @@ import {
   deleteVariant,
   importExcel,
   getAnalytics,
-  getAdminOrders,
-  updateOrderStatus,
   importHaravanPosts,
   createBannersBulk,
   deleteBanner,
@@ -21,6 +19,7 @@ import {
   deleteSubCategory,
 } from '../controllers/adminController';
 import { getPosts, getBanners, syncBanners } from '../controllers/contentController';
+import { getAllOrdersAdmin, updateOrderStatusAdmin } from '../controllers/adminController';
 
 const router = Router();
 
@@ -56,10 +55,11 @@ router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
 router.get('/posts', getPosts);
+// Routes đơn hàng Admin
+router.get('/orders', getAllOrdersAdmin);
+router.patch('/orders/:id/status', updateOrderStatusAdmin);
 
-// 6. Đơn hàng & Thống kê Analytics
-router.get('/orders', getAdminOrders);
-router.patch('/orders/:id', updateOrderStatus);
 router.get('/analytics', getAnalytics);
+
 
 export default router;
