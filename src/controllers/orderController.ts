@@ -3,67 +3,77 @@ import { prisma } from '../lib/prisma';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
-    const {
-      customerName,
-      customerPhone,
-      customerEmail,
-      gender,
-      deliveryMethod,
-      province,
-      district,
-      address,
-      storeAddress,
-      note,
-      paymentMethod,
-      subTotal,
-      discountAmount,
-      shippingFee,
-      totalAmount,
-      items,
-      needVat,
-      vatInfo,
-    } = req.body;
+    const body = req.body || {};
 
-    if (!customerName || !customerPhone || !items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ success: false, error: 'Thiếu thông tin người nhận hoặc sản phẩm' });
+    // 1. Linh hoạt nhận cả fullName/name và phone/customerPhone
+    const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
+    const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.tel || '').toString().trim();
+    const customerEmail = (body.customerEmail || body.email || '').toString().trim() || null;
+
+    // 2. Linh hoạt nhận cả items / cartItems / products
+    const rawItems = Array.isArray(body.items)
+      ? body.items
+      : Array.isArray(body.cartItems)
+      ? body.cartItems
+      : Array.isArray(body.products)
+      ? body.products
+      : [];
+
+    if (!customerName) {
+      return res.status(400).json({ success: false, error: 'Vui lòng nhập họ và tên người nhận' });
+    }
+
+    if (!customerPhone) {
+      return res.status(400).json({ success: false, error: 'Vui lòng nhập số điện thoại người nhận' });
+    }
+
+    if (rawItems.length === 0) {
+      return res.status(400).json({ success: false, error: 'Giỏ hàng của bạn đang trống, không thể tạo đơn' });
     }
 
     const orderCode = `FG-${Math.floor(100000 + Math.random() * 900000)}`;
 
+    const subTotal = Number(body.subTotal || body.totalAmount || 0);
+    const shippingFee = Number(body.shippingFee || 0);
+    const discountAmount = Number(body.discountAmount || 0);
+    const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
+
+    // 3. Chuẩn hóa danh sách items theo schema OrderItem
+    const formattedItems = rawItems.map((item: any) => ({
+      variantId: String(item.variantId || item.id || 'default-variant'),
+      productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
+      storage: String(item.storage || item.version || 'Tiêu chuẩn'),
+      color: String(item.color || 'Mặc định'),
+      price: Number(item.price || 0),
+      quantity: Number(item.quantity || 1),
+      imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
+    }));
+
+    // 4. Lưu đơn hàng vào Database
     const newOrder = await prisma.order.create({
       data: {
         orderCode,
         customerName,
         customerPhone,
-        customerEmail: customerEmail || null,
-        gender: gender || 'anh',
-        // ✅ Cung cấp giá trị mặc định nếu client không truyền
-        deliveryMethod: deliveryMethod || 'HOME_DELIVERY',
-        province: province || '',
-        district: district || '',
-        address: address || '',
-        storeAddress: storeAddress || '',
-        note: note || '',
-        paymentMethod: paymentMethod || 'COD',
+        customerEmail,
+        gender: body.gender || 'anh',
+        deliveryMethod: body.deliveryMethod || (body.address ? 'Giao hàng tận nơi' : 'Nhận tại cửa hàng'),
+        province: body.province || body.city || '',
+        district: body.district || '',
+        address: body.address || body.specificAddress || '',
+        storeAddress: body.storeAddress || '',
+        note: body.note || '',
+        paymentMethod: body.paymentMethod || 'COD',
         paymentStatus: 'PENDING',
         orderStatus: 'CONFIRMED',
-        subTotal: Number(subTotal || totalAmount || 0),
-        discountAmount: Number(discountAmount || 0),
-        shippingFee: Number(shippingFee || 0),
-        totalAmount: Number(totalAmount || subTotal || 0),
-        needVat: Boolean(needVat),
-        vatInfo: vatInfo || undefined,
+        subTotal,
+        discountAmount,
+        shippingFee,
+        totalAmount,
+        needVat: Boolean(body.needVat),
+        vatInfo: body.vatInfo || undefined,
         items: {
-          create: items.map((item: any) => ({
-            // Nếu không có variantId hợp lệ, lấy id hoặc để chuỗi trống/giá trị hợp lệ
-            variantId: String(item.variantId || item.id || 'default-variant'),
-            productName: String(item.name || item.productName || 'Sản phẩm'),
-            storage: String(item.storage || 'Tiêu chuẩn'),
-            color: String(item.color || 'Mặc định'),
-            price: Number(item.price || 0),
-            quantity: Number(item.quantity || 1),
-            imageUrl: String(item.imageUrl || item.image || ''),
-          })),
+          create: formattedItems,
         },
       },
       include: { items: true },
@@ -75,7 +85,7 @@ export const createOrder = async (req: Request, res: Response) => {
       data: newOrder,
     });
   } catch (error: any) {
-    console.error('Lỗi tạo đơn hàng:', error);
-    return res.status(500).json({ success: false, error: error.message });
+    console.error('Lỗi khi tạo đơn hàng:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Lỗi lưu đơn hàng' });
   }
 };
