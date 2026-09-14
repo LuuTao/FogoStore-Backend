@@ -183,7 +183,7 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
 export const updateOrderCustomer = async (req: Request, res: Response) => {
   try {
     const { orderCode } = req.params;
-    const { customerName, customerPhone, address, note } = req.body;
+    const { customerName, customerPhone, address, note, paymentMethod, paymentStatus } = req.body;
 
     const order = await prisma.order.findFirst({
       where: {
@@ -196,7 +196,7 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
     }
 
     if (order.orderStatus === 'CANCELLED') {
-      return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể chỉnh sửa!' });
+      return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể thay đổi!' });
     }
 
     const updated = await prisma.order.update({
@@ -206,13 +206,15 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
         ...(customerPhone && { customerPhone: customerPhone.trim() }),
         ...(address !== undefined && { address: address.trim() }),
         ...(note !== undefined && { note: note.trim() }),
+        ...(paymentMethod && { paymentMethod }),
+        ...(paymentStatus && { paymentStatus }),
       },
       include: { items: true },
     });
 
     return res.json({
       success: true,
-      message: 'Cập nhật thông tin giao hàng thành công!',
+      message: 'Cập nhật đơn hàng thành công!',
       data: updated,
     });
   } catch (error: any) {
