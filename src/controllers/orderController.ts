@@ -106,3 +106,26 @@ export const createOrder = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: error.message || 'Lỗi lưu đơn hàng' });
   }
 };
+
+export const getOrderByCode = async (req: Request, res: Response) => {
+  try {
+    const { orderCode } = req.params;
+    const order = await prisma.order.findFirst({
+      where: {
+        OR: [
+          { orderCode: String(orderCode) },
+          { id: String(orderCode) },
+        ],
+      },
+      include: { items: true },
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    }
+
+    return res.json({ success: true, data: order });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
