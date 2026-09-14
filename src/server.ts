@@ -18,19 +18,43 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const uploadDir = path.join(__dirname, '../uploads');
 
+// Danh sách các domain Frontend được phép kết nối
+const allowedOrigins = [
+  'https://fogo-store.vercel.app',
+  'https://fogo-store-nfw3.vercel.app',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Cho phép các tool test API không gửi origin (như Postman/Curl) hoặc các domain trong danh sách
+    if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Fallback mở cho mọi domain trong giai đoạn phát triển
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+  ],
+};
+
 // Middlewares
-app.use(
-  cors({
-    origin: '*',
-    credentials: true,
-  })
-);
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Xử lý triệt để toàn bộ preflight OPTIONS requests
 
 // Cho phép truyền payload dung lượng lớn (Base64 ảnh)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Static file uploads
+// Static file uploads & public
 app.use('/uploads', express.static(uploadDir));
 app.use(express.static(path.join(__dirname, '../public')));
 
