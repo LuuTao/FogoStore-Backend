@@ -1,9 +1,19 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 
+// 1. TẠO ĐƠN HÀNG (Bắt buộc tài khoản & Gắn userId)
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
+
+    // Bắt buộc phải có tài khoản đăng nhập (lấy từ body hoặc auth middleware)
+    const userId = body.userId || (req as any).user?.id || null;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Vui lòng đăng nhập tài khoản để tiến hành đặt hàng!',
+      });
+    }
 
     // 1. Linh hoạt nhận cả fullName/name và phone/customerPhone
     const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
@@ -38,13 +48,11 @@ export const createOrder = async (req: Request, res: Response) => {
     const discountAmount = Number(body.discountAmount || 0);
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
-    // 3. Chuẩn hóa danh sách items theo schema OrderItem
-    // Trong hàm createOrder:
+    // 3. Chuẩn hóa danh sách items theo schema OrderItem (Kiểm tra ID tránh Foreign Key error)
     const formattedItems = await Promise.all(
       rawItems.map(async (item: any) => {
         const rawVariantId = String(item.variantId || item.id || '');
-        
-        // Kiểm tra xem variantId có tồn tại trong database không
+
         let validVariantId: string | null = null;
         if (rawVariantId && !rawVariantId.startsWith('mock-') && !rawVariantId.startsWith('fallback-')) {
           const exists = await prisma.productVariant.findUnique({
@@ -55,7 +63,7 @@ export const createOrder = async (req: Request, res: Response) => {
         }
 
         return {
-          variantId: validVariantId, // Nếu không tìm thấy thì để null, không gây lỗi Foreign Key
+          variantId: validVariantId,
           productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
           storage: String(item.storage || item.version || 'Tiêu chuẩn'),
           color: String(item.color || 'Mặc định'),
@@ -66,10 +74,11 @@ export const createOrder = async (req: Request, res: Response) => {
       })
     );
 
-    // 4. Lưu đơn hàng vào Database
+    // 4. Lưu đơn hàng vào Database cùng userId
     const newOrder = await prisma.order.create({
       data: {
         orderCode,
+        userId, // Gắn đơn hàng vào tài khoản người dùng
         customerName,
         customerPhone,
         customerEmail,
@@ -107,6 +116,7 @@ export const createOrder = async (req: Request, res: Response) => {
   }
 };
 
+// 2. XEM CHI TIẾT ĐƠN HÀNG THEO MÃ HOẶC ID (Dùng cho trang /don-hang/[orderCode])
 export const getOrderByCode = async (req: Request, res: Response) => {
   try {
     const { orderCode } = req.params;
@@ -127,5 +137,27 @@ export const getOrderByCode = async (req: Request, res: Response) => {
     return res.json({ success: true, data: order });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 3. LẤY DANH SÁCH ĐƠN HÀNG CỦA MỖI TÀI KHOẢN (Dùng cho trang /tai-khoan/don-hang)
+export const getMyOrders = async (req: Request, res: Response) => {
+  try {
+    const userId = (req.query.userId as string) || (req as any).user?.id;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'Thiếu ID người dùng' });
+    }
+
+    const orders = await prisma.order.findMany({
+      where: { userId },
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({ success: true, data: orders });
+  } catch (error: any) {
+    console.error('Lỗi lấy danh sách đơn của tài khoản:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Lỗi lấy lịch sử đơn hàng' });
   }
 };

@@ -99,33 +99,35 @@ model ProductVariant {
 }
 
 model Order {
-  id             String      @id @default(uuid())
-  orderCode      String      @unique
-  customerName   String
-  customerPhone  String
-  customerEmail  String?
-  gender         String      @default("anh")
-  deliveryMethod String
-  province       String?
-  district       String?
-  address        String?
-  storeAddress   String?
-  note           String?
-  paymentMethod  String
-  paymentStatus  String      @default("PENDING") // PENDING, PAID, REFUNDED
-  orderStatus    String      @default("CONFIRMED") // CONFIRMED, SHIPPING, COMPLETED, CANCELLED
-  subTotal       Float
-  discountAmount Float       @default(0)
-  shippingFee    Float       @default(0)
-  totalAmount    Float
-  needVat        Boolean     @default(false)
-  vatInfo        Json?
-  userId         String?
-  user           User?       @relation(fields: [userId], references: [id])
-  items          OrderItem[]
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id              String      @id @default(uuid())
+  orderCode       String      @unique
+  userId          String?     // ID của người dùng đã đăng nhập
+  user            User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  gender          String      @default("anh")
+  deliveryMethod  String      @default("Giao hàng tận nơi")
+  province        String?
+  district        String?
+  address         String?
+  storeAddress    String?
+  note            String?
+  paymentMethod   String      @default("COD")
+  paymentStatus   String      @default("PENDING")
+  orderStatus     String      @default("CONFIRMED")
+  subTotal        Float
+  discountAmount  Float       @default(0)
+  shippingFee     Float       @default(0)
+  totalAmount     Float
+  needVat         Boolean     @default(false)
+  vatInfo         Json?
+  items           OrderItem[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 }
+
+
 
 model OrderItem {
   id          String          @id @default(uuid())
