@@ -18,10 +18,9 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const uploadDir = path.join(__dirname, '../uploads');
 
-// Cấu hình CORS tương thích Express 5 & chuẩn preflight
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    callback(null, true); // Cho phép mọi domain kết nối an toàn kèm credentials
+    callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -31,10 +30,12 @@ const corsOptions: cors.CorsOptions = {
     'X-Requested-With',
     'Accept',
     'Origin',
+    'Cache-Control',
+    'Pragma',
+    'Expires',
   ],
 };
 
-// 1. Áp dụng CORS cho toàn bộ request & tự động xử lý OPTIONS preflight
 app.use(cors(corsOptions));
 
 // 2. Parser dữ liệu dung lượng lớn (Base64 ảnh)
