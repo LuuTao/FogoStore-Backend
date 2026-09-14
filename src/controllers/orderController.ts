@@ -116,7 +116,7 @@ export const createOrder = async (req: Request, res: Response) => {
   }
 };
 
-// 2. XEM CHI TIẾT ĐƠN HÀNG THEO MÃ HOẶC ID (Dùng cho trang /don-hang/[orderCode])
+// 1. LẤY CHI TIẾT ĐƠN HÀNG (Đảm bảo include items)
 export const getOrderByCode = async (req: Request, res: Response) => {
   try {
     const { orderCode } = req.params;
@@ -135,6 +135,86 @@ export const getOrderByCode = async (req: Request, res: Response) => {
     }
 
     return res.json({ success: true, data: order });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 2. KHÁCH HÀNG HỦY ĐƠN HÀNG
+export const cancelOrderCustomer = async (req: Request, res: Response) => {
+  try {
+    const { orderCode } = req.params;
+
+    const order = await prisma.order.findFirst({
+      where: {
+        OR: [{ orderCode: String(orderCode) }, { id: String(orderCode) }],
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng để hủy' });
+    }
+
+    // Chỉ cho phép hủy khi đơn chưa giao
+    if (order.orderStatus === 'SHIPPING' || order.orderStatus === 'COMPLETED' || order.orderStatus === 'DELIVERED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Đơn hàng đang giao hoặc đã hoàn tất, không thể hủy trực tuyến. Vui lòng gọi CSKH!',
+      });
+    }
+
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: { orderStatus: 'CANCELLED' },
+      include: { items: true },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Hủy đơn hàng thành công!',
+      data: updated,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 3. KHÁCH HÀNG CHỈNH SỬA THÔNG TIN NHẬN HÀNG
+export const updateOrderCustomer = async (req: Request, res: Response) => {
+  try {
+    const { orderCode } = req.params;
+    const { customerName, customerPhone, address, note } = req.body;
+
+    const order = await prisma.order.findFirst({
+      where: {
+        OR: [{ orderCode: String(orderCode) }, { id: String(orderCode) }],
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    }
+
+    if (order.orderStatus === 'CANCELLED') {
+      return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể chỉnh sửa!' });
+    }
+
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        ...(customerName && { customerName: customerName.trim() }),
+        ...(customerPhone && { customerPhone: customerPhone.trim() }),
+        ...(address !== undefined && { address: address.trim() }),
+        ...(note !== undefined && { note: note.trim() }),
+      },
+      include: { items: true },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Cập nhật thông tin giao hàng thành công!',
+      data: updated,
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
