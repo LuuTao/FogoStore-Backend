@@ -39,15 +39,32 @@ export const createOrder = async (req: Request, res: Response) => {
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
     // 3. Chuẩn hóa danh sách items theo schema OrderItem
-    const formattedItems = rawItems.map((item: any) => ({
-      variantId: String(item.variantId || item.id || 'default-variant'),
-      productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
-      storage: String(item.storage || item.version || 'Tiêu chuẩn'),
-      color: String(item.color || 'Mặc định'),
-      price: Number(item.price || 0),
-      quantity: Number(item.quantity || 1),
-      imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
-    }));
+    // Trong hàm createOrder:
+    const formattedItems = await Promise.all(
+      rawItems.map(async (item: any) => {
+        const rawVariantId = String(item.variantId || item.id || '');
+        
+        // Kiểm tra xem variantId có tồn tại trong database không
+        let validVariantId: string | null = null;
+        if (rawVariantId && !rawVariantId.startsWith('mock-') && !rawVariantId.startsWith('fallback-')) {
+          const exists = await prisma.productVariant.findUnique({
+            where: { id: rawVariantId },
+            select: { id: true },
+          });
+          if (exists) validVariantId = exists.id;
+        }
+
+        return {
+          variantId: validVariantId, // Nếu không tìm thấy thì để null, không gây lỗi Foreign Key
+          productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
+          storage: String(item.storage || item.version || 'Tiêu chuẩn'),
+          color: String(item.color || 'Mặc định'),
+          price: Number(item.price || 0),
+          quantity: Number(item.quantity || 1),
+          imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
+        };
+      })
+    );
 
     // 4. Lưu đơn hàng vào Database
     const newOrder = await prisma.order.create({
