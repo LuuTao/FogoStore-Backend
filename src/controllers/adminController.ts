@@ -63,15 +63,17 @@ export const createFullProduct = async (req: Request, res: Response) => {
         variants: {
           create: variants.map((v: any) => {
             const st = (v.storage || 'Tiêu chuẩn').toString().replace(/\//g, '-');
+            const p = Number(v.price || 0);
+            const s = p <= 0 ? 0 : Number(v.stock || 0);
             return {
               storage: st,
               color: v.color || 'Tiêu chuẩn',
               slug: `${st.toLowerCase()}-${(v.color || 'tc')
                 .toLowerCase()
                 .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-3)}`,
-              price: Number(v.price || 0),
-              originalPrice: Number(v.originalPrice || v.price || 0),
-              stock: Number(v.stock || 0),
+              price: p,
+              originalPrice: Number(v.originalPrice || p || 0),
+              stock: s,
               images: v.imageUrl ? [v.imageUrl] : Array.isArray(v.images) ? v.images : [],
             };
           }),
@@ -102,11 +104,14 @@ export const deleteProduct = async (req: Request, res: Response) => {
 export const addVariant = async (req: Request, res: Response) => {
   try {
     const { productId, storage, color, price, originalPrice, stock, imageUrl } = req.body;
-    if (!productId || !storage || !color || !price) {
+    if (!productId || !storage || !color) {
       return res.status(400).json({ success: false, error: 'Vui lòng điền đủ thông tin bắt buộc' });
     }
 
     const cleanSt = storage.toString().replace(/\//g, '-');
+    const p = Number(price || 0);
+    const s = p <= 0 ? 0 : Number(stock || 0);
+
     const variantSlug = `${cleanSt.toLowerCase()}-${color
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
@@ -117,9 +122,9 @@ export const addVariant = async (req: Request, res: Response) => {
         storage: cleanSt,
         color,
         slug: variantSlug,
-        price: Number(price),
-        originalPrice: Number(originalPrice || price),
-        stock: Number(stock || 0),
+        price: p,
+        originalPrice: Number(originalPrice || p),
+        stock: s,
         images: imageUrl ? [imageUrl] : [],
       },
       include: { product: { include: { category: true } } },
@@ -149,14 +154,17 @@ export const updateVariant = async (req: Request, res: Response) => {
       }
     }
 
+    const p = price !== undefined ? parseFloat(price) : undefined;
+    const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? parseInt(stock, 10) : undefined);
+
     const updated = await prisma.productVariant.update({
       where: { id },
       data: {
         ...(storage !== undefined && { storage: String(storage).replace(/\//g, '-') }),
         ...(color !== undefined && { color: String(color) }),
-        ...(price !== undefined && { price: parseFloat(price) }),
+        ...(p !== undefined && { price: p }),
         ...(originalPrice !== undefined && { originalPrice: parseFloat(originalPrice) }),
-        ...(stock !== undefined && { stock: parseInt(stock, 10) }),
+        ...(s !== undefined && { stock: s }),
         ...(formattedImages.length > 0 && { images: formattedImages }),
       },
       include: {
@@ -176,11 +184,15 @@ export const patchVariant = async (req: Request, res: Response) => {
   try {
     const id = (req.params.variantId || req.params.id) as string;
     const { stock, price } = req.body;
+    
+    const p = price !== undefined ? Number(price) : undefined;
+    const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? Number(stock) : undefined);
+
     const updated = await prisma.productVariant.update({
       where: { id },
       data: {
-        ...(stock !== undefined && { stock: Number(stock) }),
-        ...(price !== undefined && { price: Number(price) }),
+        ...(s !== undefined && { stock: s }),
+        ...(p !== undefined && { price: p }),
       },
     });
     return res.json({ success: true, data: updated });
@@ -245,7 +257,7 @@ const extractSheet1Xml = (buffer: Buffer): string => {
   throw new Error('Không tìm thấy sheet dữ liệu trong file Excel');
 };
 
-// 8. Import sản phẩm từ Excel Haravan (Tự động thay / thành - trong dung lượng)
+// 8. Import sản phẩm từ Excel (Áp dụng quy luật Giá = 0 -> Hết hàng)
 export const importExcel = async (req: any, res: Response) => {
   try {
     let fileBuffer: Buffer | null = null;
@@ -298,10 +310,10 @@ export const importExcel = async (req: any, res: Response) => {
       const fullName = getVal('Tên');
       if (!fullName || productIdHaravan === 0) continue;
 
-      // Trích xuất dung lượng và thay thế ngay ký tự / thành - (Ví dụ: 36GB/2TB -> 36GB-2TB)
+      // Trích xuất dung lượng và thay thế / thành -
       const storageMatch = fullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i);
       const rawStorage = storageMatch ? storageMatch[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
-      const storage = rawStorage.replace(/\//g, '-'); // <-- QUAN TRỌNG: Triệt tiêu dấu /
+      const storage = rawStorage.replace(/\//g, '-');
 
       const cleanName = fullName
         .replace(/\b(\d+\s*(?:GB|TB)(\s*\/\s*(?:\d+\s*)?(?:GB|TB))?)\b/gi, '')
@@ -376,14 +388,18 @@ export const importExcel = async (req: any, res: Response) => {
       }
       if (!color) color = 'Tiêu chuẩn';
 
+      // QUY LUẬT MỚI: Giá = 0 -> Tồn kho = 0 (Hết hàng)
       const rawPrice = Number(getVal('Giá') || getVal('Giá Bán') || 0);
       const price = isNaN(rawPrice) ? 0 : rawPrice;
 
       const rawOriginalPrice = Number(getVal('Giá so sánh') || getVal('Giá Gốc') || price);
       const originalPrice = isNaN(rawOriginalPrice) ? price : rawOriginalPrice;
 
-      const rawStock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
-      const stock = isNaN(rawStock) ? 10 : rawStock;
+      let stock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
+      if (price <= 0) {
+        stock = 0; // Hết hàng vì không có giá
+      }
+      stock = isNaN(stock) ? 0 : stock;
 
       const rawImg = getVal('Ảnh biến thể') || getVal('Link hình') || getVal('Ảnh');
       const imageUrl = rawImg.startsWith('http') ? rawImg : '';
@@ -407,7 +423,7 @@ export const importExcel = async (req: any, res: Response) => {
           data: {
             price: price > 0 ? price : existingVariant.price,
             originalPrice: originalPrice > 0 ? originalPrice : existingVariant.originalPrice,
-            stock,
+            stock: price <= 0 ? 0 : stock,
             images: imageUrl ? Array.from(new Set([...existingVariant.images, imageUrl])) : existingVariant.images,
           },
         });
@@ -430,7 +446,7 @@ export const importExcel = async (req: any, res: Response) => {
 
     return res.json({
       success: true,
-      message: `Đã nhập thành công! Tạo ${importedCount} sản phẩm chính và ${variantCount} biến thể kèm đầy đủ mô tả HTML.`,
+      message: `Đã nhập thành công! Tạo ${importedCount} sản phẩm chính và ${variantCount} biến thể theo quy luật mới.`,
     });
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
