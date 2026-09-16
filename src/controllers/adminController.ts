@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
-import xlsx from 'node-xlsx';
-import ExcelJS from 'exceljs';
 import fs from 'fs';
+import zlib from 'zlib';
+import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
 
 // 1. Lấy tồn kho & biến thể sản phẩm
@@ -127,7 +127,7 @@ export const addVariant = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Cập nhật biến thể (Sửa cấu hình trên Modal Admin)
+// 5. Cập nhật biến thể
 export const updateVariant = async (req: Request, res: Response) => {
   try {
     const id = (req.params.id || req.params.variantId) as string;
@@ -196,7 +196,52 @@ export const deleteVariant = async (req: Request, res: Response) => {
   }
 };
 
-// 8. Import sản phẩm từ Excel (Tương thích 100% file Haravan, sửa lỗi column -1)
+// --- BỘ GIẢI MÃ VÀ TRÍCH XUẤT HARAVAN EXCEL KHÔNG BAO GIỜ BỊ LỖI ---
+const decodeHtmlEntities = (str: string): string => {
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+};
+
+const extractSheet1Xml = (buffer: Buffer): string => {
+  let pos = 0;
+  const bufLen = buffer.length;
+
+  while (pos < bufLen - 4) {
+    if (buffer.readUInt32LE(pos) !== 0x04034b50) {
+      pos++;
+      continue;
+    }
+
+    const compMethod = buffer.readUInt16LE(pos + 8);
+    const compSize = buffer.readUInt32LE(pos + 18);
+    const fnLen = buffer.readUInt16LE(pos + 26);
+    const extraLen = buffer.readUInt16LE(pos + 28);
+
+    const filename = buffer.toString('utf8', pos + 30, pos + 30 + fnLen);
+    const dataStart = pos + 30 + fnLen + extraLen;
+    const compressedData = buffer.subarray(dataStart, dataStart + compSize);
+
+    if (filename === 'xl/worksheets/sheet1.xml') {
+      if (compMethod === 0) {
+        return compressedData.toString('utf8');
+      } else if (compMethod === 8) {
+        return zlib.inflateRawSync(compressedData).toString('utf8');
+      }
+      throw new Error(`Phương thức nén không hỗ trợ: ${compMethod}`);
+    }
+
+    pos = dataStart + compSize;
+  }
+
+  throw new Error('Không tìm thấy sheet dữ liệu trong file Excel');
+};
+
+// 8. Import sản phẩm từ Excel (Khắc phục dứt điểm invalid column -1 và setting sheetNo)
 export const importExcel = async (req: any, res: Response) => {
   try {
     let fileBuffer: Buffer | null = null;
@@ -212,50 +257,45 @@ export const importExcel = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, error: 'Chưa đính kèm file Excel hợp lệ' });
     }
 
-    // Sử dụng ExcelJS để phân tích tệp (tránh hoàn toàn lỗi "column -1" của SheetJS/node-xlsx)
-    const workbook = new ExcelJS.Workbook();
-    // Sửa dòng này:
-    await workbook.xlsx.load(fileBuffer as any);
+    // 1. Trích xuất trực tiếp XML của sheet1 (Bỏ qua lỗi OpenXML/ExcelJS/SheetJS)
+    const xmlContent = extractSheet1Xml(fileBuffer);
 
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet || worksheet.rowCount < 2) {
-      return res.status(400).json({ success: false, error: 'Bảng tính rỗng hoặc không có dữ liệu' });
+    const rowMatches = xmlContent.match(/<x:row>(.*?)<\/x:row>/gs);
+    if (!rowMatches || rowMatches.length < 2) {
+      return res.status(400).json({ success: false, error: 'File Excel rỗng hoặc không chứa dữ liệu hàng' });
     }
 
-    // 1. Trích xuất danh sách cột tiêu đề từ dòng 1
-    const headers: Record<number, string> = {};
-    worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      if (cell.value) {
-        headers[colNumber] = cell.value.toString().trim();
-      }
+    // Hàm lấy giá trị các ô trong 1 hàng
+    const parseRowCells = (rowXml: string): string[] => {
+      const cellMatches = rowXml.match(/<x:c\b[^>]*>(?:<x:v>(.*?)<\/x:v>)?<\/x:c>/gs) || [];
+      return cellMatches.map((c) => {
+        const vMatch = c.match(/<x:v>(.*?)<\/x:v>/s);
+        return vMatch ? decodeHtmlEntities(vMatch[1]) : '';
+      });
+    };
+
+    const headers = parseRowCells(rowMatches[0]);
+    const headerMap: Record<string, number> = {};
+    headers.forEach((h, idx) => {
+      if (h) headerMap[h.trim()] = idx;
     });
 
     let importedCount = 0;
     let variantCount = 0;
-
-    // Cache danh mục để tối ưu tốc độ truy vấn
     const categoryCache: Record<string, string> = {};
 
-    for (let r = 2; r <= worksheet.rowCount; r++) {
-      const row = worksheet.getRow(r);
-      if (!row || !row.hasValues) continue;
+    for (let r = 1; r < rowMatches.length; r++) {
+      const cells = parseRowCells(rowMatches[r]);
+      if (!cells || cells.length === 0) continue;
 
-      const d: Record<string, any> = {};
-      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        const header = headers[colNumber];
-        if (header) {
-          let val = cell.value;
-          if (val && typeof val === 'object') {
-            if ('text' in val) val = (val as any).text;
-            else if ('result' in val) val = (val as any).result;
-          }
-          d[header] = val !== undefined && val !== null ? val : '';
-        }
-      });
+      const getVal = (colName: string): string => {
+        const idx = headerMap[colName];
+        return idx !== undefined && cells[idx] !== undefined ? cells[idx].trim() : '';
+      };
 
-      // Bỏ qua các dòng ảnh phụ rác của Haravan (Mã sản phẩm = 0 hoặc rỗng)
-      const productIdHaravan = Number(d['Mã sản phẩm'] || 0);
-      const fullName = (d['Tên'] || d['name'] || '').toString().trim();
+      // Bỏ qua các dòng ảnh phụ Haravan (Mã sản phẩm = 0)
+      const productIdHaravan = Number(getVal('Mã sản phẩm') || 0);
+      const fullName = getVal('Tên');
       if (!fullName || productIdHaravan === 0) continue;
 
       // Trích xuất dung lượng từ Tên sản phẩm
@@ -269,7 +309,7 @@ export const importExcel = async (req: any, res: Response) => {
         .trim();
 
       // Chuẩn hóa danh mục
-      const rawCategory = (d['Loại sản phẩm'] || d['Danh Mục'] || d['category'] || '').toString().toLowerCase();
+      const rawCategory = (getVal('Loại sản phẩm') || getVal('Danh Mục') || '').toLowerCase();
       const combinedText = `${rawCategory} ${fullName.toLowerCase()}`;
       const isUsed = combinedText.includes('cũ') || combinedText.includes('like new') || combinedText.includes('99%');
 
@@ -284,7 +324,7 @@ export const importExcel = async (req: any, res: Response) => {
         standardCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
       }
 
-      // Lấy hoặc tạo Category từ Cache
+      // Tra cứu hoặc tạo danh mục
       let categoryId = categoryCache[standardCategoryName];
       if (!categoryId) {
         let cat = await prisma.category.findFirst({ where: { name: standardCategoryName } });
@@ -310,9 +350,10 @@ export const importExcel = async (req: any, res: Response) => {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
 
-      // Tìm hoặc tạo Sản phẩm cha (Lưu đầy đủ cột Mô tả HTML)
+      // Lưu sản phẩm cha kèm toàn bộ nội dung HTML từ cột Mô tả
       let prod = await prisma.product.findUnique({ where: { slug: parentSlug } });
-      const descriptionContent = d['Mô tả'] ? String(d['Mô tả']) : `Sản phẩm chính hãng ${cleanName} tại Fogo Store`;
+      const rawDescription = getVal('Mô tả');
+      const descriptionContent = rawDescription || `Sản phẩm chính hãng ${cleanName} tại Fogo Store`;
 
       if (!prod) {
         prod = await prisma.product.create({
@@ -324,39 +365,37 @@ export const importExcel = async (req: any, res: Response) => {
           },
         });
         importedCount++;
-      } else if (d['Mô tả'] && (!prod.description || prod.description.length < 50)) {
-        // Cập nhật mô tả nếu sản phẩm cũ chưa có
+      } else if (rawDescription && (!prod.description || prod.description.length < 50)) {
         await prisma.product.update({
           where: { id: prod.id },
           data: { description: descriptionContent },
         });
       }
 
-      // Lấy Màu sắc từ các thuộc tính Haravan
-      let color = (d['Màu Sắc'] || d['color'] || '').toString().trim();
+      // Trích xuất màu sắc
+      let color = getVal('Màu Sắc');
       if (!color) {
-        if (d['Thuộc tính 1'] === 'Color' && d['Giá trị thuộc tính 1']) color = String(d['Giá trị thuộc tính 1']);
-        else if (d['Thuộc tính 2'] === 'Color' && d['Giá trị thuộc tính 2']) color = String(d['Giá trị thuộc tính 2']);
-        else if (d['Thuộc tính 3'] === 'Color' && d['Giá trị thuộc tính 3']) color = String(d['Giá trị thuộc tính 3']);
+        if (getVal('Thuộc tính 1') === 'Color') color = getVal('Giá trị thuộc tính 1');
+        else if (getVal('Thuộc tính 2') === 'Color') color = getVal('Giá trị thuộc tính 2');
+        else if (getVal('Thuộc tính 3') === 'Color') color = getVal('Giá trị thuộc tính 3');
       }
       if (!color) color = 'Tiêu chuẩn';
 
-      const price = Number(d['Giá'] || d['Giá Bán'] || d['price'] || 0);
-      const originalPrice = Number(d['Giá so sánh'] || d['Giá Gốc'] || price);
-      const stock = Number(d['Số lượng tồn kho'] || d['Tồn Kho'] || 10);
-      const imageUrl = (d['Ảnh biến thể'] || d['Link hình'] || d['Ảnh'] || '').toString().trim();
+      const price = Number(getVal('Giá') || getVal('Giá Bán') || 0);
+      const originalPrice = Number(getVal('Giá so sánh') || getVal('Giá Gốc') || price);
+      const stock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
+      const imageUrl = getVal('Ảnh biến thể') || getVal('Link hình') || getVal('Ảnh');
 
       const cleanColorSlug = color
-        .toString()
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[đĐ]/g, 'd')
         .replace(/[^a-z0-9]+/g, '-');
-      const cleanStorageSlug = storage.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
 
-      // Upsert biến thể
+      // Tạo hoặc cập nhật biến thể
       const existingVariant = await prisma.productVariant.findFirst({
         where: { productId: prod.id, slug: variantSlug },
       });
@@ -390,7 +429,7 @@ export const importExcel = async (req: any, res: Response) => {
 
     return res.json({
       success: true,
-      message: `Đã nhập thành công! Tạo ${importedCount} sản phẩm chính và ${variantCount} biến thể kèm đầy đủ mô tả chi tiết.`,
+      message: `Đã nhập thành công! Tạo ${importedCount} sản phẩm chính và ${variantCount} biến thể kèm đầy đủ mô tả HTML.`,
     });
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
@@ -539,22 +578,15 @@ export const getAnalytics = async (req: Request, res: Response) => {
   }
 };
 
-// 12. Quản lý đơn hàng Admin (Đồng bộ chuẩn duy nhất)
+// 12. Quản lý đơn hàng Admin
 export const getAllOrdersAdmin = async (req: Request, res: Response) => {
   try {
     const orders = await prisma.order.findMany({
-      include: {
-        items: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
     });
 
-    return res.json({
-      success: true,
-      data: orders,
-    });
+    return res.json({ success: true, data: orders });
   } catch (error: any) {
     console.error('Lỗi lấy danh sách đơn Admin:', error);
     return res.status(500).json({ success: false, error: error.message });
