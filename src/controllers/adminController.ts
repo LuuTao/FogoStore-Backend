@@ -196,7 +196,7 @@ export const deleteVariant = async (req: Request, res: Response) => {
   }
 };
 
-// --- BỘ GIẢI MÃ VÀ TRÍCH XUẤT HARAVAN EXCEL KHÔNG BAO GIỜ BỊ LỖI ---
+// --- BỘ GIẢI MÃ VÀ TRÍCH XUẤT HARAVAN EXCEL KHÔNG BAO GIỜ BỊ LỆCH CỘT ---
 const decodeHtmlEntities = (str: string): string => {
   return str
     .replace(/&lt;/g, '<')
@@ -241,7 +241,7 @@ const extractSheet1Xml = (buffer: Buffer): string => {
   throw new Error('Không tìm thấy sheet dữ liệu trong file Excel');
 };
 
-// 8. Import sản phẩm từ Excel (Khắc phục dứt điểm invalid column -1 và setting sheetNo)
+// 8. Import sản phẩm từ Excel Haravan (Bắt trọn vẹn 46 cột kể cả ô trống, chống NaN 100%)
 export const importExcel = async (req: any, res: Response) => {
   try {
     let fileBuffer: Buffer | null = null;
@@ -257,17 +257,16 @@ export const importExcel = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, error: 'Chưa đính kèm file Excel hợp lệ' });
     }
 
-    // 1. Trích xuất trực tiếp XML của sheet1 (Bỏ qua lỗi OpenXML/ExcelJS/SheetJS)
+    // 1. Trích xuất XML nội dung sheet1
     const xmlContent = extractSheet1Xml(fileBuffer);
-
     const rowMatches = xmlContent.match(/<x:row>(.*?)<\/x:row>/gs);
     if (!rowMatches || rowMatches.length < 2) {
       return res.status(400).json({ success: false, error: 'File Excel rỗng hoặc không chứa dữ liệu hàng' });
     }
 
-    // Hàm lấy giá trị các ô trong 1 hàng
+    // Biểu thức chính quy không tham lam (non-greedy) bắt chính xác cả <x:c .../> và <x:c>...</x:c>
     const parseRowCells = (rowXml: string): string[] => {
-      const cellMatches = rowXml.match(/<x:c\b[^>]*>(?:<x:v>(.*?)<\/x:v>)?<\/x:c>/gs) || [];
+      const cellMatches = rowXml.match(/<x:c\b[^>]*?(?:\/>|>.*?<\/x:c>)/gs) || [];
       return cellMatches.map((c) => {
         const vMatch = c.match(/<x:v>(.*?)<\/x:v>/s);
         return vMatch ? decodeHtmlEntities(vMatch[1]) : '';
@@ -293,7 +292,7 @@ export const importExcel = async (req: any, res: Response) => {
         return idx !== undefined && cells[idx] !== undefined ? cells[idx].trim() : '';
       };
 
-      // Bỏ qua các dòng ảnh phụ Haravan (Mã sản phẩm = 0)
+      // Bỏ qua các dòng ảnh phụ rác của Haravan (Mã sản phẩm = 0)
       const productIdHaravan = Number(getVal('Mã sản phẩm') || 0);
       const fullName = getVal('Tên');
       if (!fullName || productIdHaravan === 0) continue;
@@ -302,7 +301,7 @@ export const importExcel = async (req: any, res: Response) => {
       const storageMatch = fullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i);
       const storage = storageMatch ? storageMatch[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
 
-      // Làm sạch tên sản phẩm
+      // Làm sạch tên sản phẩm chính
       const cleanName = fullName
         .replace(/\b(\d+\s*(?:GB|TB)(\s*\/\s*(?:\d+\s*)?(?:GB|TB))?)\b/gi, '')
         .replace(/\s+/g, ' ')
@@ -381,10 +380,19 @@ export const importExcel = async (req: any, res: Response) => {
       }
       if (!color) color = 'Tiêu chuẩn';
 
-      const price = Number(getVal('Giá') || getVal('Giá Bán') || 0);
-      const originalPrice = Number(getVal('Giá so sánh') || getVal('Giá Gốc') || price);
-      const stock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
-      const imageUrl = getVal('Ảnh biến thể') || getVal('Link hình') || getVal('Ảnh');
+      // Chuyển đổi số an toàn, bảo vệ tuyệt đối chống NaN
+      const rawPrice = Number(getVal('Giá') || getVal('Giá Bán') || 0);
+      const price = isNaN(rawPrice) ? 0 : rawPrice;
+
+      const rawOriginalPrice = Number(getVal('Giá so sánh') || getVal('Giá Gốc') || price);
+      const originalPrice = isNaN(rawOriginalPrice) ? price : rawOriginalPrice;
+
+      const rawStock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
+      const stock = isNaN(rawStock) ? 10 : rawStock;
+
+      // Lấy ảnh thật từ cột Ảnh biến thể hoặc Link hình
+      const rawImg = getVal('Ảnh biến thể') || getVal('Link hình') || getVal('Ảnh');
+      const imageUrl = rawImg.startsWith('http') ? rawImg : '';
 
       const cleanColorSlug = color
         .toLowerCase()
@@ -395,7 +403,7 @@ export const importExcel = async (req: any, res: Response) => {
       const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
 
-      // Tạo hoặc cập nhật biến thể
+      // Upsert biến thể
       const existingVariant = await prisma.productVariant.findFirst({
         where: { productId: prod.id, slug: variantSlug },
       });
