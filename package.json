@@ -20,7 +20,7 @@
     "dotenv": "^17.4.2",
     "exceljs": "^3.10.0",
     "express": "^5.2.1",
-    "google-auth-library": "^11.0.2",
+    "google-auth-library": "^11.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "node-xlsx": "^0.24.0",

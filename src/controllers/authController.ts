@@ -3,8 +3,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import nodemailer from 'nodemailer';
+import { OAuth2Client } from 'google-auth-library';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fogo_secret_jwt_key_2026';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // Cấu hình dịch vụ gửi thư Gmail (miễn phí qua App Password)
 const transporter = nodemailer.createTransport({
@@ -35,7 +39,6 @@ export const sendEmailOtp = async (req: Request, res: Response) => {
     const emailClean = email.trim().toLowerCase();
     const phoneClean = phone.trim().replace(/\s+/g, '');
 
-    // Kiểm tra xem Email hoặc Số điện thoại đã tồn tại chưa
     const existingUser = await prisma.user.findFirst({
       where: {
         OR: [{ email: emailClean }, { phone: phoneClean }],
@@ -52,7 +55,6 @@ export const sendEmailOtp = async (req: Request, res: Response) => {
       });
     }
 
-    // Tạo mã ngẫu nhiên 6 số và đặt hạn 5 phút
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
@@ -62,10 +64,8 @@ export const sendEmailOtp = async (req: Request, res: Response) => {
       expiresAt,
     });
 
-    // In mã ra Terminal để test nhanh không cần mở hộp thư
     console.log(`\n📧 [GMAIL OTP] ${emailClean} -> MÃ OTP: >>> ${otp} <<<\n`);
 
-    // Gửi email thực tế qua tài khoản Gmail
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       await transporter.sendMail({
         from: `"Fogo Store" <${process.env.EMAIL_USER}>`,
@@ -139,7 +139,70 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 3. CÁC HÀM CŨ (ZALO, LOGIN, GOOGLE AUTH)
+// 3. ĐĂNG NHẬP GOOGLE CHUẨN XÁC THỰC TOKEN
+// ==========================================
+export const googleAuth = async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ success: false, error: 'Thiếu Google credential token' });
+    }
+
+    // Xác thực token chính chủ từ máy chủ Google
+    const ticket = await googleClient.verifyIdToken({
+      idToken: token,
+      audience: GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(401).json({ success: false, error: 'Xác thực tài khoản Google thất bại' });
+    }
+
+    const cleanEmail = payload.email.trim().toLowerCase();
+    const fullName = payload.name || cleanEmail.split('@')[0];
+
+    // Tìm xem tài khoản đã tồn tại trong DB chưa
+    let user = await prisma.user.findFirst({
+      where: { email: cleanEmail },
+    });
+
+    if (!user) {
+      const randomPassword = await bcrypt.hash(`GG_${Date.now()}_${Math.random()}`, 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          phone: 'GG_' + Date.now().toString().slice(-8),
+          fullName: fullName,
+          password: randomPassword,
+          role: 'CUSTOMER',
+        },
+      });
+    }
+
+    // Ký JWT Token phiên đăng nhập cho user
+    const appToken = jwt.sign(
+      { id: user.id, email: user.email, phone: user.phone, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        token: appToken,
+        user,
+      },
+    });
+  } catch (error: any) {
+    console.error('Lỗi googleAuth:', error);
+    return res.status(401).json({ success: false, error: 'Token Google không hợp lệ hoặc đã hết hạn' });
+  }
+};
+
+// ==========================================
+// 4. CÁC HÀM CŨ (ZALO, LOGIN)
 // ==========================================
 export const sendZaloOtp = async (req: Request, res: Response) => {
   try {
@@ -190,8 +253,8 @@ export const verifyZaloOtp = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { account, password } = req.body;
-    const clean = account?.trim();
+    const { account, email, password } = req.body;
+    const clean = (account || email)?.trim();
     const user = await prisma.user.findFirst({
       where: { OR: [{ phone: clean }, { email: clean }] },
     });
@@ -201,32 +264,6 @@ export const login = async (req: Request, res: Response) => {
     }
 
     const token = jwt.sign({ id: user.id, phone: user.phone, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    return res.json({ success: true, data: { token, user } });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-export const googleAuth = async (req: Request, res: Response) => {
-  try {
-    const { email, fullName } = req.body;
-    const cleanEmail = email?.trim().toLowerCase();
-    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
-
-    if (!user) {
-      const randomPassword = await bcrypt.hash(`GG_${Date.now()}`, 10);
-      user = await prisma.user.create({
-        data: {
-          email: cleanEmail,
-          phone: 'GG_' + Date.now().toString().slice(-8),
-          fullName: fullName || cleanEmail.split('@')[0],
-          password: randomPassword,
-          role: 'CUSTOMER',
-        },
-      });
-    }
-
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     return res.json({ success: true, data: { token, user } });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
