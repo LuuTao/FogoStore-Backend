@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import compression from 'compression';
-
+import { prisma } from './lib/prisma';
 // Import Routes
 import authRoutes from './routes/authRoutes';
 import productRoutes from './routes/productRoutes';
@@ -12,7 +12,7 @@ import contentRoutes from './routes/contentRoutes';
 import adminRoutes from './routes/adminRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 import cartRoutes from './routes/cart';
-
+import { getTrafficAnalytics } from './controllers/adminController';
 dotenv.config();
 
 const app = express();
@@ -67,6 +67,24 @@ app.use('/api', contentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api', orderRoutes);
+
+app.use(async (req, res, next) => {
+  // Bỏ qua các file tĩnh hoặc options request
+  if (req.method === 'GET' && !req.path.startsWith('/uploads') && !req.path.includes('.')) {
+    try {
+      await prisma.pageView.create({
+        data: {
+          ip: req.ip || req.socket.remoteAddress || '',
+          userAgent: req.headers['user-agent'] || '',
+          path: req.path,
+        },
+      });
+    } catch {
+      // Tránh block request nếu ghi log lỗi
+    }
+  }
+  next();
+});
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server Backend đang chạy tại cổng ${PORT} (sẵn sàng nhận kết nối từ mọi thiết bị)`);

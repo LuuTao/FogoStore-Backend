@@ -796,3 +796,98 @@ export const getCustomers = async (req: Request, res: Response) => {
     });
   }
 };
+export const getTrafficAnalytics = async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    // Mặc định xem 7 ngày gần nhất nếu không truyền param
+    const end = endDate ? new Date(`${endDate}T23:59:59.999Z`) : new Date();
+    const start = startDate
+      ? new Date(`${startDate}T00:00:00.000Z`)
+      : new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+    // 1. Lấy toàn bộ lượt truy cập trong khoảng ngày
+    const pageViews = await prisma.pageView.findMany({
+      where: { createdAt: { gte: start, lte: end } },
+      select: { createdAt: true },
+    });
+
+    // 2. Lấy số lượng tài khoản đăng ký mới trong khoảng ngày
+    const newUsers = await prisma.user.findMany({
+      where: { createdAt: { gte: start, lte: end } },
+      select: { createdAt: true },
+    });
+
+    // 3. Lấy các đơn hàng trong khoảng ngày để tính khách cũ / khách mới
+    const ordersInPeriod = await prisma.order.findMany({
+      where: {
+        createdAt: { gte: start, lte: end },
+        orderStatus: { not: 'CANCELLED' },
+      },
+      select: { customerPhone: true, createdAt: true },
+    });
+
+    // Gom dữ liệu theo từng ngày (YYYY-MM-DD)
+    const dayMap = new Map<string, {
+      date: string;
+      views: number;
+      registrations: number;
+      newCustomers: number;
+      returningCustomers: number;
+    }>();
+
+    // Khởi tạo các mốc ngày liên tục từ start đến end
+    const curr = new Date(start);
+    while (curr <= end) {
+      const dStr = curr.toISOString().split('T')[0];
+      dayMap.set(dStr, {
+        date: dStr,
+        views: 0,
+        registrations: 0,
+        newCustomers: 0,
+        returningCustomers: 0,
+      });
+      curr.setDate(curr.getDate() + 1);
+    }
+
+    // Đếm Pageviews
+    pageViews.forEach((pv) => {
+      const dStr = pv.createdAt.toISOString().split('T')[0];
+      if (dayMap.has(dStr)) dayMap.get(dStr)!.views += 1;
+    });
+
+    // Đếm Đăng ký tài khoản
+    newUsers.forEach((u) => {
+      const dStr = u.createdAt.toISOString().split('T')[0];
+      if (dayMap.has(dStr)) dayMap.get(dStr)!.registrations += 1;
+    });
+
+    // Đếm Khách cũ vs Khách mới mua hàng
+    for (const ord of ordersInPeriod) {
+      const dStr = ord.createdAt.toISOString().split('T')[0];
+      const phone = (ord.customerPhone || '').trim();
+      if (!phone || !dayMap.has(dStr)) continue;
+
+      // Kiểm tra xem khách này từng có đơn hàng nào trước thời điểm đơn này tạo không
+      const pastOrders = await prisma.order.count({
+        where: {
+          customerPhone: phone,
+          orderStatus: { not: 'CANCELLED' },
+          createdAt: { lt: ord.createdAt },
+        },
+      });
+
+      if (pastOrders === 0) {
+        dayMap.get(dStr)!.newCustomers += 1;
+      } else {
+        dayMap.get(dStr)!.returningCustomers += 1;
+      }
+    }
+
+    const data = Array.from(dayMap.values()).reverse();
+
+    return res.json({ success: true, data });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};

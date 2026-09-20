@@ -23,6 +23,7 @@ model User {
   posts     Post[]
   createdAt DateTime   @default(now())
   cartItems CartItem[]
+  pageViews PageView[]
 }
 
 model Category {
@@ -188,4 +189,23 @@ model CartItem {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, variantId])
+}
+model PageView {
+  id        String   @id @default(uuid())
+  ip        String?
+  userAgent String?
+  path      String?
+  
+  // Thông tin định danh người dùng nếu đã đăng nhập
+  userId    String?
+  userEmail String?
+  userPhone String?
+  userName  String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+  @@index([userEmail])
 }

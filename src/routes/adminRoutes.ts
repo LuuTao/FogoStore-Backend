@@ -21,6 +21,7 @@ import {
 } from '../controllers/adminController';
 import { getPosts, getBanners, syncBanners } from '../controllers/contentController';
 import { getAllOrdersAdmin, updateOrderStatusAdmin } from '../controllers/adminController';
+import { getTrafficAnalytics } from '../controllers/adminController';
 
 const router = Router();
 
@@ -63,4 +64,6 @@ router.patch('/orders/:id/status', updateOrderStatusAdmin);
 router.get('/analytics', getAnalytics);
 
 router.get('/customers', getCustomers);
+
+router.get('/traffic-analytics', getTrafficAnalytics);
 export default router;
