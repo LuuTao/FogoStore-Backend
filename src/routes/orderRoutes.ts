@@ -4,7 +4,7 @@ import {
   getOrderByCode, 
   getMyOrders,
   cancelOrderCustomer,
-  updateOrderCustomer, // Đã có đủ hàm chỉnh sửa
+  updateOrderCustomer,
   getAllOrdersAdmin,
   updateOrderStatus,
   deleteOrder,
@@ -13,18 +13,22 @@ import {
 
 const router = Router();
 
-// --- ROUTE DÀNH CHO KHÁCH HÀNG & GUEST ---
+// ==========================================
+// 1. ROUTE DÀNH CHO KHÁCH HÀNG & GUEST
+// ==========================================
 router.post('/', createOrder);
-router.get('/my-orders', getMyOrders); // Đặt trước các route có tham số động
-
-// Các route có tham số động :orderCode
+router.get('/my-orders', getMyOrders);
 router.get('/:orderCode', getOrderByCode);
 router.patch('/:orderCode/cancel', cancelOrderCustomer);
-router.patch('/:orderCode/update', updateOrderCustomer); // Bổ sung chuẩn endpoint chỉnh sửa thông tin
+router.patch('/:orderCode/update', updateOrderCustomer);
 
-// --- ROUTE DÀNH CHO QUẢN TRỊ VIÊN (ADMIN) ---
+// ==========================================
+// 2. ROUTE QUẢN TRỊ VIÊN (ADMIN) - Khớp 100% yêu cầu xóa của Frontend
+// ==========================================
 router.get('/admin/orders', getAllOrdersAdmin);
 router.patch('/admin/orders/:id/status', updateOrderStatus);
+
+// ⚠️ Quan trọng: Đặt route bulk-delete TRƯỚC route :id để tránh Express hiểu nhầm
 router.post('/admin/orders/bulk-delete', deleteBulkOrders);
 router.delete('/admin/orders/:id', deleteOrder);
 
