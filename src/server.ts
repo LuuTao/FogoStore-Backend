@@ -52,7 +52,7 @@ app.get('/', (req, res) => res.send('<h1>Fogo Store API Server is running!</h1>'
 app.get('/api/health', (req, res) =>
   res.json({ status: 'OK', message: 'Fogo Store API Server is running!' })
 );
-
+app.get('/api/admin/menu', (req, res) => res.json({ success: true, data: [] }));
 // 5. Đăng ký toàn bộ API endpoints
 app.use('/api', uploadRoutes);
 app.use('/api/auth', authRoutes);

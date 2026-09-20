@@ -6,7 +6,10 @@ import nodemailer from 'nodemailer';
 import { OAuth2Client } from 'google-auth-library';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fogo_secret_jwt_key_2026';
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID ||
+  process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
+  '974988535391-m1b2907pue0m80ek7a5vuvl0idkk2787.apps.googleusercontent.com';
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -170,10 +173,12 @@ export const googleAuth = async (req: Request, res: Response) => {
 
     if (!user) {
       const randomPassword = await bcrypt.hash(`GG_${Date.now()}_${Math.random()}`, 10);
+      const uniquePhone = `GG_${Date.now().toString().slice(-6)}_${Math.floor(1000 + Math.random() * 9000)}`;
+
       user = await prisma.user.create({
         data: {
           email: cleanEmail,
-          phone: 'GG_' + Date.now().toString().slice(-8),
+          phone: uniquePhone,
           fullName: fullName,
           password: randomPassword,
           role: 'CUSTOMER',
