@@ -8,7 +8,6 @@ export const createOrder = async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
 
-    // Lấy userId nếu có, nếu khách vãng lai thì để null hoặc gán chuỗi Guest
     const userId = body.userId || (req as any).user?.id || null;
 
     const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
@@ -42,7 +41,6 @@ export const createOrder = async (req: Request, res: Response) => {
     const discountAmount = Number(body.discountAmount || 0);
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
-    // Chuẩn hóa danh sách items
     const formattedItems = await Promise.all(
       rawItems.map(async (item: any) => {
         const rawVariantId = String(item.variantId || item.id || '');
@@ -68,7 +66,6 @@ export const createOrder = async (req: Request, res: Response) => {
       })
     );
 
-    // Lưu đơn hàng vào Database (Hỗ trợ cả khách vãng lai khi userId = null)
     const newOrder = await prisma.order.create({
       data: {
         orderCode,
@@ -111,11 +108,17 @@ export const createOrder = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ
+// 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ (Đã ép kiểu string an toàn)
 // ==========================================
 export const getOrderByCode = async (req: Request, res: Response) => {
   try {
-    const { orderCode } = req.params;
+    const rawCode = req.params.orderCode;
+    const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
+
+    if (!orderCode) {
+      return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
+    }
+
     const order = await prisma.order.findFirst({
       where: {
         OR: [
@@ -137,11 +140,16 @@ export const getOrderByCode = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 3. KHÁCH HÀNG HỦY ĐƠN HÀNG
+// 3. KHÁCH HÀNG HỦY ĐƠN HÀNG (Đã ép kiểu string an toàn)
 // ==========================================
 export const cancelOrderCustomer = async (req: Request, res: Response) => {
   try {
-    const { orderCode } = req.params;
+    const rawCode = req.params.orderCode;
+    const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
+
+    if (!orderCode) {
+      return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
+    }
 
     const order = await prisma.order.findFirst({
       where: {
@@ -192,7 +200,7 @@ export const getAllOrdersAdmin = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 5. CẬP NHẬT TRẠNG THÁI ĐƠN (Admin) + ĐỒNG BỘ DOANH THU & THANH TOÁN
+// 5. CẬP NHẬT TRẠNG THÁI ĐƠN (Admin)
 // ==========================================
 export const updateOrderStatus = async (req: Request, res: Response) => {
   try {
@@ -203,13 +211,12 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     if (orderStatus) dataToUpdate.orderStatus = orderStatus;
     if (paymentStatus) dataToUpdate.paymentStatus = paymentStatus;
 
-    // TỰ ĐỘNG: Nếu chuyển trạng thái sang COMPLETED (Hoàn tất) -> Thanh toán đổi thành PAID (Đã thanh toán)
     if (orderStatus === 'COMPLETED' && !paymentStatus) {
       dataToUpdate.paymentStatus = 'PAID';
     }
 
     const updated = await prisma.order.update({
-      where: { id },
+      where: { id: String(id) },
       data: dataToUpdate,
       include: { items: true },
     });
@@ -227,13 +234,12 @@ export const deleteOrder = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Xóa OrderItem liên quan trước để tránh lỗi ràng buộc khóa ngoại
     await prisma.orderItem.deleteMany({
-      where: { orderId: id },
+      where: { orderId: String(id) },
     });
 
     await prisma.order.delete({
-      where: { id },
+      where: { id: String(id) },
     });
 
     return res.json({ success: true, message: 'Đã xóa đơn hàng thành công' });
@@ -248,7 +254,7 @@ export const deleteOrder = async (req: Request, res: Response) => {
 // ==========================================
 export const deleteBulkOrders = async (req: Request, res: Response) => {
   try {
-    const { ids } = req.body; // Mảng ID đơn hàng: ["id1", "id2", ...]
+    const { ids } = req.body;
 
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, error: 'Danh sách ID đơn hàng không hợp lệ' });
@@ -274,14 +280,15 @@ export const deleteBulkOrders = async (req: Request, res: Response) => {
 // ==========================================
 export const getMyOrders = async (req: Request, res: Response) => {
   try {
-    const userId = (req.query.userId as string) || (req as any).user?.id;
+    const rawUserId = req.query.userId || (req as any).user?.id;
+    const userId = Array.isArray(rawUserId) ? rawUserId[0] : rawUserId;
 
     if (!userId) {
       return res.status(400).json({ success: false, error: 'Thiếu ID người dùng' });
     }
 
     const orders = await prisma.order.findMany({
-      where: { userId },
+      where: { userId: String(userId) },
       include: { items: true },
       orderBy: { createdAt: 'desc' },
     });
