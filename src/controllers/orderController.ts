@@ -299,3 +299,52 @@ export const getMyOrders = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: error.message || 'Lỗi lấy lịch sử đơn hàng' });
   }
 };
+// ==========================================
+// 9. KHÁCH HÀNG CHỈNH SỬA THÔNG TIN NHẬN HÀNG
+// ==========================================
+export const updateOrderCustomer = async (req: Request, res: Response) => {
+  try {
+    const rawCode = req.params.orderCode;
+    const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
+    const { customerName, customerPhone, address, note, paymentMethod, paymentStatus } = req.body;
+
+    if (!orderCode) {
+      return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
+    }
+
+    const order = await prisma.order.findFirst({
+      where: {
+        OR: [{ orderCode: String(orderCode) }, { id: String(orderCode) }],
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    }
+
+    if (order.orderStatus === 'CANCELLED') {
+      return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể thay đổi!' });
+    }
+
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        ...(customerName && { customerName: customerName.trim() }),
+        ...(customerPhone && { customerPhone: customerPhone.trim() }),
+        ...(address !== undefined && { address: address.trim() }),
+        ...(note !== undefined && { note: note.trim() }),
+        ...(paymentMethod && { paymentMethod }),
+        ...(paymentStatus && { paymentStatus }),
+      },
+      include: { items: true },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Cập nhật thông tin đơn hàng thành công!',
+      data: updated,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
