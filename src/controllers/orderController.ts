@@ -1,26 +1,20 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 
-// 1. TẠO ĐƠN HÀNG (Bắt buộc tài khoản & Gắn userId)
+// ==========================================
+// 1. TẠO ĐƠN HÀNG (Hỗ trợ Guest & Tài khoản)
+// ==========================================
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
 
-    // Bắt buộc phải có tài khoản đăng nhập (lấy từ body hoặc auth middleware)
+    // Lấy userId nếu có, nếu khách vãng lai thì để null hoặc gán chuỗi Guest
     const userId = body.userId || (req as any).user?.id || null;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Vui lòng đăng nhập tài khoản để tiến hành đặt hàng!',
-      });
-    }
 
-    // 1. Linh hoạt nhận cả fullName/name và phone/customerPhone
     const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
     const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.tel || '').toString().trim();
     const customerEmail = (body.customerEmail || body.email || '').toString().trim() || null;
 
-    // 2. Linh hoạt nhận cả items / cartItems / products
     const rawItems = Array.isArray(body.items)
       ? body.items
       : Array.isArray(body.cartItems)
@@ -48,7 +42,7 @@ export const createOrder = async (req: Request, res: Response) => {
     const discountAmount = Number(body.discountAmount || 0);
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
-    // 3. Chuẩn hóa danh sách items theo schema OrderItem (Kiểm tra ID tránh Foreign Key error)
+    // Chuẩn hóa danh sách items
     const formattedItems = await Promise.all(
       rawItems.map(async (item: any) => {
         const rawVariantId = String(item.variantId || item.id || '');
@@ -74,11 +68,11 @@ export const createOrder = async (req: Request, res: Response) => {
       })
     );
 
-    // 4. Lưu đơn hàng vào Database cùng userId
+    // Lưu đơn hàng vào Database (Hỗ trợ cả khách vãng lai khi userId = null)
     const newOrder = await prisma.order.create({
       data: {
         orderCode,
-        userId, // Gắn đơn hàng vào tài khoản người dùng
+        userId: userId || undefined,
         customerName,
         customerPhone,
         customerEmail,
@@ -116,7 +110,9 @@ export const createOrder = async (req: Request, res: Response) => {
   }
 };
 
-// 1. LẤY CHI TIẾT ĐƠN HÀNG (Đảm bảo include items)
+// ==========================================
+// 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ
+// ==========================================
 export const getOrderByCode = async (req: Request, res: Response) => {
   try {
     const { orderCode } = req.params;
@@ -140,7 +136,9 @@ export const getOrderByCode = async (req: Request, res: Response) => {
   }
 };
 
-// 2. KHÁCH HÀNG HỦY ĐƠN HÀNG
+// ==========================================
+// 3. KHÁCH HÀNG HỦY ĐƠN HÀNG
+// ==========================================
 export const cancelOrderCustomer = async (req: Request, res: Response) => {
   try {
     const { orderCode } = req.params;
@@ -155,7 +153,6 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng để hủy' });
     }
 
-    // Chỉ cho phép hủy khi đơn chưa giao
     if (order.orderStatus === 'SHIPPING' || order.orderStatus === 'COMPLETED' || order.orderStatus === 'DELIVERED') {
       return res.status(400).json({
         success: false,
@@ -179,50 +176,102 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
   }
 };
 
-// 3. KHÁCH HÀNG CHỈNH SỬA THÔNG TIN NHẬN HÀNG
-export const updateOrderCustomer = async (req: Request, res: Response) => {
+// ==========================================
+// 4. LẤY TẤT CẢ ĐƠN HÀNG (Dành cho trang Admin)
+// ==========================================
+export const getAllOrdersAdmin = async (req: Request, res: Response) => {
   try {
-    const { orderCode } = req.params;
-    const { customerName, customerPhone, address, note, paymentMethod, paymentStatus } = req.body;
-
-    const order = await prisma.order.findFirst({
-      where: {
-        OR: [{ orderCode: String(orderCode) }, { id: String(orderCode) }],
-      },
-    });
-
-    if (!order) {
-      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
-    }
-
-    if (order.orderStatus === 'CANCELLED') {
-      return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể thay đổi!' });
-    }
-
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: {
-        ...(customerName && { customerName: customerName.trim() }),
-        ...(customerPhone && { customerPhone: customerPhone.trim() }),
-        ...(address !== undefined && { address: address.trim() }),
-        ...(note !== undefined && { note: note.trim() }),
-        ...(paymentMethod && { paymentMethod }),
-        ...(paymentStatus && { paymentStatus }),
-      },
+    const orders = await prisma.order.findMany({
       include: { items: true },
+      orderBy: { createdAt: 'desc' },
     });
-
-    return res.json({
-      success: true,
-      message: 'Cập nhật đơn hàng thành công!',
-      data: updated,
-    });
+    return res.json({ success: true, data: orders });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// 3. LẤY DANH SÁCH ĐƠN HÀNG CỦA MỖI TÀI KHOẢN (Dùng cho trang /tai-khoan/don-hang)
+// ==========================================
+// 5. CẬP NHẬT TRẠNG THÁI ĐƠN (Admin) + ĐỒNG BỘ DOANH THU & THANH TOÁN
+// ==========================================
+export const updateOrderStatus = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { orderStatus, paymentStatus } = req.body;
+
+    const dataToUpdate: any = {};
+    if (orderStatus) dataToUpdate.orderStatus = orderStatus;
+    if (paymentStatus) dataToUpdate.paymentStatus = paymentStatus;
+
+    // TỰ ĐỘNG: Nếu chuyển trạng thái sang COMPLETED (Hoàn tất) -> Thanh toán đổi thành PAID (Đã thanh toán)
+    if (orderStatus === 'COMPLETED' && !paymentStatus) {
+      dataToUpdate.paymentStatus = 'PAID';
+    }
+
+    const updated = await prisma.order.update({
+      where: { id },
+      data: dataToUpdate,
+      include: { items: true },
+    });
+
+    return res.json({ success: true, data: updated });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==========================================
+// 6. XÓA ĐƠN HÀNG ĐƠN LẺ (Admin)
+// ==========================================
+export const deleteOrder = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Xóa OrderItem liên quan trước để tránh lỗi ràng buộc khóa ngoại
+    await prisma.orderItem.deleteMany({
+      where: { orderId: id },
+    });
+
+    await prisma.order.delete({
+      where: { id },
+    });
+
+    return res.json({ success: true, message: 'Đã xóa đơn hàng thành công' });
+  } catch (error: any) {
+    console.error('Lỗi khi xóa đơn hàng:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Không thể xóa đơn hàng' });
+  }
+};
+
+// ==========================================
+// 7. XÓA HÀNG LOẠT NHIỀU ĐƠN HÀNG (Admin)
+// ==========================================
+export const deleteBulkOrders = async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body; // Mảng ID đơn hàng: ["id1", "id2", ...]
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, error: 'Danh sách ID đơn hàng không hợp lệ' });
+    }
+
+    await prisma.orderItem.deleteMany({
+      where: { orderId: { in: ids } },
+    });
+
+    await prisma.order.deleteMany({
+      where: { id: { in: ids } },
+    });
+
+    return res.json({ success: true, message: `Đã xóa thành công ${ids.length} đơn hàng` });
+  } catch (error: any) {
+    console.error('Lỗi khi xóa hàng loạt đơn hàng:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Không thể xóa hàng loạt đơn hàng' });
+  }
+};
+
+// ==========================================
+// 8. LẤY DANH SÁCH ĐƠN HÀNG CỦA TÀI KHOẢN CÁ NHÂN
+// ==========================================
 export const getMyOrders = async (req: Request, res: Response) => {
   try {
     const userId = (req.query.userId as string) || (req as any).user?.id;
