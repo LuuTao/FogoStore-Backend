@@ -11,7 +11,7 @@ import contentRoutes from './routes/contentRoutes';
 import adminRoutes from './routes/adminRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 import cartRoutes from './routes/cart'; // <-- BỔ SUNG IMPORT ROUTE GIỎ HÀNG
-
+import compression from 'compression';
 dotenv.config();
 
 const app = express();
@@ -61,7 +61,16 @@ app.use('/api/orders', orderRoutes);
 app.use('/api', contentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cart', cartRoutes); // <-- BỔ SUNG ĐĂNG KÝ ENDPOINT /api/cart
+// Bật nén toàn bộ response JSON & assets
+app.use(compression())
+// Thêm route health check trả về ngay lập tức không query DB
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
+
+
+;
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server Backend đang chạy tại cổng ${PORT} (sẵn sàng nhận kết nối từ mọi thiết bị)`);
 });
