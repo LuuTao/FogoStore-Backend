@@ -17,6 +17,7 @@ import {
   getSubCategories,
   upsertSubCategory,
   deleteSubCategory,
+  getCustomers
 } from '../controllers/adminController';
 import { getPosts, getBanners, syncBanners } from '../controllers/contentController';
 import { getAllOrdersAdmin, updateOrderStatusAdmin } from '../controllers/adminController';
@@ -61,5 +62,5 @@ router.patch('/orders/:id/status', updateOrderStatusAdmin);
 
 router.get('/analytics', getAnalytics);
 
-
+router.get('/customers', getCustomers);
 export default router;

@@ -310,7 +310,6 @@ export const importExcel = async (req: any, res: Response) => {
       const fullName = getVal('Tên');
       if (!fullName || productIdHaravan === 0) continue;
 
-      // Trích xuất dung lượng và thay thế / thành -
       const storageMatch = fullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i);
       const rawStorage = storageMatch ? storageMatch[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
       const storage = rawStorage.replace(/\//g, '-');
@@ -388,7 +387,6 @@ export const importExcel = async (req: any, res: Response) => {
       }
       if (!color) color = 'Tiêu chuẩn';
 
-      // QUY LUẬT MỚI: Giá = 0 -> Tồn kho = 0 (Hết hàng)
       const rawPrice = Number(getVal('Giá') || getVal('Giá Bán') || 0);
       const price = isNaN(rawPrice) ? 0 : rawPrice;
 
@@ -397,7 +395,7 @@ export const importExcel = async (req: any, res: Response) => {
 
       let stock = Number(getVal('Số lượng tồn kho') || getVal('Tồn Kho') || 10);
       if (price <= 0) {
-        stock = 0; // Hết hàng vì không có giá
+        stock = 0;
       }
       stock = isNaN(stock) ? 0 : stock;
 
@@ -711,5 +709,90 @@ export const deleteBanner = async (req: Request, res: Response) => {
     return res.json({ success: true, message: 'Đã xóa banner' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// 15. Quản lý khách hàng (Tổng hợp & Phân loại rank tự động từ Orders)
+export const getCustomers = async (req: Request, res: Response) => {
+  try {
+    // Lấy toàn bộ đơn hàng hợp lệ (loại bỏ đơn đã hủy)
+    const orders = await prisma.order.findMany({
+      where: {
+        orderStatus: {
+          not: 'CANCELLED',
+        },
+      },
+      select: {
+        customerName: true,
+        customerPhone: true,
+        customerEmail: true,
+        address: true,
+        totalAmount: true,
+        createdAt: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    const customerMap = new Map<string, any>();
+
+    orders.forEach((order) => {
+      const phone = (order.customerPhone || '').trim();
+      if (!phone) return;
+
+      if (!customerMap.has(phone)) {
+        customerMap.set(phone, {
+          _id: phone,
+          fullName: order.customerName || 'Khách vãng lai',
+          phone: phone,
+          email: order.customerEmail || '',
+          address: order.address || '',
+          totalOrders: 0,
+          totalSpent: 0,
+          lastOrderDate: order.createdAt,
+          firstOrderDate: order.createdAt,
+        });
+      }
+
+      const item = customerMap.get(phone);
+      item.totalOrders += 1;
+      item.totalSpent += Number(order.totalAmount || 0);
+    });
+
+    // Phân loại khách hàng: VIP, LOYAL, RETURNING, NEW
+    const customers = Array.from(customerMap.values()).map((c) => {
+      let customerRank: 'NEW' | 'RETURNING' | 'LOYAL' | 'VIP' = 'NEW';
+
+      if (c.totalOrders >= 5 || c.totalSpent >= 80000000) {
+        customerRank = 'VIP';
+      } else if (c.totalOrders >= 3 || c.totalSpent >= 30000000) {
+        customerRank = 'LOYAL';
+      } else if (c.totalOrders >= 2) {
+        customerRank = 'RETURNING';
+      }
+
+      return {
+        ...c,
+        customerRank,
+      };
+    });
+
+    // Sắp xếp khách mua gần nhất lên đầu
+    customers.sort(
+      (a, b) => new Date(b.lastOrderDate).getTime() - new Date(a.lastOrderDate).getTime()
+    );
+
+    return res.json({
+      success: true,
+      data: customers,
+    });
+  } catch (error: any) {
+    console.error('Lỗi lấy danh sách khách hàng:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi máy chủ khi lấy dữ liệu khách hàng',
+      error: error.message,
+    });
   }
 };
