@@ -233,19 +233,13 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
 export const deleteOrder = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
-    await prisma.orderItem.deleteMany({
-      where: { orderId: String(id) },
-    });
-
-    await prisma.order.delete({
-      where: { id: String(id) },
-    });
-
-    return res.json({ success: true, message: 'Đã xóa đơn hàng thành công' });
+    // 1. Xóa các sản phẩm con trước
+    await prisma.orderItem.deleteMany({ where: { orderId: String(id) } });
+    // 2. Sau đó mới xóa đơn hàng chính
+    await prisma.order.delete({ where: { id: String(id) } });
+    return res.json({ success: true, message: 'Đã xóa' });
   } catch (error: any) {
-    console.error('Lỗi khi xóa đơn hàng:', error);
-    return res.status(500).json({ success: false, error: error.message || 'Không thể xóa đơn hàng' });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
