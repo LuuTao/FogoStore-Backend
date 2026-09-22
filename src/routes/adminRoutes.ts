@@ -38,7 +38,7 @@ router.post('/security-auth', async (req, res) => {
   try {
     const { email, password } = req.body;
     const targetEmail = process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com';
-    const targetPass = process.env.SECURITY_LOG_PASSWORD || 'MatKhauRiengCuaBan@2026';
+    const targetPass = process.env.SECURITY_LOG_PASSWORD || 'Tao30092004@';
 
     if (email !== targetEmail || password !== targetPass) {
       return res.status(401).json({
