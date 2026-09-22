@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
+import { verifyAdmin } from '../lib/authMiddleware';
 import {
   getInventory,
   createFullProduct,
@@ -66,4 +67,5 @@ router.get('/analytics', getAnalytics);
 router.get('/customers', getCustomers);
 
 router.get('/traffic-analytics', getTrafficAnalytics);
+router.use(verifyAdmin);
 export default router;

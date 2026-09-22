@@ -11,6 +11,8 @@ import orderRoutes from './routes/orderRoutes';
 import contentRoutes from './routes/contentRoutes';
 import adminRoutes from './routes/adminRoutes';
 import uploadRoutes from './routes/uploadRoutes';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import cartRoutes from './routes/cart';
 import { getTrafficAnalytics } from './controllers/adminController';
 dotenv.config();
@@ -85,6 +87,29 @@ app.use(async (req, res, next) => {
   }
   next();
 });
+
+// 1. Chống rò rỉ thông tin Header & Clickjacking
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" } // Đảm bảo load được ảnh từ thư mục uploads
+}));
+
+// 2. Rate Limiting toàn cục: Tối đa 150 request / phút / IP
+const globalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 150,
+  message: { success: false, message: 'Quá nhiều yêu cầu từ IP của bạn, vui lòng đợi 1 phút.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/', globalLimiter);
+
+// 3. Giới hạn nghiêm ngặt với các thao tác đặt hàng / auth (chống brute-force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Quá nhiều lần thử đăng nhập/đặt hàng, vui lòng thử lại sau 15 phút.' },
+});
+app.use('/api/auth/', authLimiter);
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server Backend đang chạy tại cổng ${PORT} (sẵn sàng nhận kết nối từ mọi thiết bị)`);
