@@ -257,7 +257,7 @@ const extractSheet1Xml = (buffer: Buffer): string => {
   throw new Error('Không tìm thấy sheet dữ liệu trong file Excel');
 };
 
-// 8. Import sản phẩm từ Excel (Áp dụng quy luật Giá = 0 -> Hết hàng)
+// 8. Import sản phẩm từ Excel
 export const importExcel = async (req: any, res: Response) => {
   try {
     let fileBuffer: Buffer | null = null;
@@ -611,28 +611,59 @@ export const getAllOrdersAdmin = async (req: Request, res: Response) => {
 export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { orderStatus, paymentStatus } = req.body;
+    const { orderStatus, status } = req.body;
 
+    const newOrderStatus = orderStatus || status;
+
+    // 1. Lấy thông tin đơn hàng hiện tại từ Database
+    const existingOrder = await prisma.order.findUnique({
+      where: { id: String(id) },
+    });
+
+    if (!existingOrder) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy đơn hàng!' });
+    }
+
+    // 2. Nhận diện phương thức thanh toán
+    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
+    const isQrPayment = ['vnpay-qr', 'momo', 'qr', 'bank'].includes(rawMethod);
+
+    // 3. Quy tắc cập nhật PaymentStatus:
+    // - Nếu là Chuyển khoản QR -> Luôn luôn là PAID (Đã chuyển tiền)
+    // - Nếu là Tiền mặt (COD) -> Chỉ chuyển thành PAID khi orderStatus là COMPLETED (Hoàn tất)
+    let finalPaymentStatus = existingOrder.paymentStatus;
+
+    if (isQrPayment) {
+      finalPaymentStatus = 'PAID';
+    } else {
+      // Đơn COD
+      if (newOrderStatus === 'COMPLETED') {
+        finalPaymentStatus = 'PAID';
+      } else if (newOrderStatus) {
+        finalPaymentStatus = 'UNPAID';
+      }
+    }
+
+    // 4. Lưu lại vào Database
     const updated = await prisma.order.update({
       where: { id: String(id) },
       data: {
-        ...(orderStatus && { orderStatus }),
-        ...(paymentStatus && { paymentStatus }),
+        ...(newOrderStatus && { orderStatus: newOrderStatus }),
+        paymentStatus: finalPaymentStatus,
       },
       include: { items: true },
     });
 
     return res.json({
       success: true,
-      message: 'Cập nhật trạng thái đơn thành công',
+      message: 'Cập nhật trạng thái đơn hàng thành công!',
       data: updated,
     });
   } catch (error: any) {
-    console.error('Lỗi update trạng thái đơn:', error);
+    console.error('Lỗi updateOrderStatusAdmin:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
-
 // 13. Haravan Posts
 export const importHaravanPosts = async (req: any, res: Response) => {
   try {
@@ -712,10 +743,9 @@ export const deleteBanner = async (req: Request, res: Response) => {
   }
 };
 
-// 15. Quản lý khách hàng (Tổng hợp & Phân loại rank tự động từ Orders)
+// 15. Quản lý khách hàng
 export const getCustomers = async (req: Request, res: Response) => {
   try {
-    // Lấy toàn bộ đơn hàng hợp lệ (loại bỏ đơn đã hủy)
     const orders = await prisma.order.findMany({
       where: {
         orderStatus: {
@@ -760,7 +790,6 @@ export const getCustomers = async (req: Request, res: Response) => {
       item.totalSpent += Number(order.totalAmount || 0);
     });
 
-    // Phân loại khách hàng: VIP, LOYAL, RETURNING, NEW
     const customers = Array.from(customerMap.values()).map((c) => {
       let customerRank: 'NEW' | 'RETURNING' | 'LOYAL' | 'VIP' = 'NEW';
 
@@ -778,7 +807,6 @@ export const getCustomers = async (req: Request, res: Response) => {
       };
     });
 
-    // Sắp xếp khách mua gần nhất lên đầu
     customers.sort(
       (a, b) => new Date(b.lastOrderDate).getTime() - new Date(a.lastOrderDate).getTime()
     );
@@ -796,29 +824,27 @@ export const getCustomers = async (req: Request, res: Response) => {
     });
   }
 };
+
+// 16. Thống kê truy cập & phân tích khách hàng
 export const getTrafficAnalytics = async (req: Request, res: Response) => {
   try {
     const { startDate, endDate } = req.query;
 
-    // Mặc định xem 7 ngày gần nhất nếu không truyền param
     const end = endDate ? new Date(`${endDate}T23:59:59.999Z`) : new Date();
     const start = startDate
       ? new Date(`${startDate}T00:00:00.000Z`)
       : new Date(end.getTime() - 6 * 24 * 60 * 60 * 1000);
 
-    // 1. Lấy toàn bộ lượt truy cập trong khoảng ngày
     const pageViews = await prisma.pageView.findMany({
       where: { createdAt: { gte: start, lte: end } },
       select: { createdAt: true },
     });
 
-    // 2. Lấy số lượng tài khoản đăng ký mới trong khoảng ngày
     const newUsers = await prisma.user.findMany({
       where: { createdAt: { gte: start, lte: end } },
       select: { createdAt: true },
     });
 
-    // 3. Lấy các đơn hàng trong khoảng ngày để tính khách cũ / khách mới
     const ordersInPeriod = await prisma.order.findMany({
       where: {
         createdAt: { gte: start, lte: end },
@@ -827,7 +853,6 @@ export const getTrafficAnalytics = async (req: Request, res: Response) => {
       select: { customerPhone: true, createdAt: true },
     });
 
-    // Gom dữ liệu theo từng ngày (YYYY-MM-DD)
     const dayMap = new Map<string, {
       date: string;
       views: number;
@@ -836,7 +861,6 @@ export const getTrafficAnalytics = async (req: Request, res: Response) => {
       returningCustomers: number;
     }>();
 
-    // Khởi tạo các mốc ngày liên tục từ start đến end
     const curr = new Date(start);
     while (curr <= end) {
       const dStr = curr.toISOString().split('T')[0];
@@ -850,25 +874,21 @@ export const getTrafficAnalytics = async (req: Request, res: Response) => {
       curr.setDate(curr.getDate() + 1);
     }
 
-    // Đếm Pageviews
     pageViews.forEach((pv) => {
       const dStr = pv.createdAt.toISOString().split('T')[0];
       if (dayMap.has(dStr)) dayMap.get(dStr)!.views += 1;
     });
 
-    // Đếm Đăng ký tài khoản
     newUsers.forEach((u) => {
       const dStr = u.createdAt.toISOString().split('T')[0];
       if (dayMap.has(dStr)) dayMap.get(dStr)!.registrations += 1;
     });
 
-    // Đếm Khách cũ vs Khách mới mua hàng
     for (const ord of ordersInPeriod) {
       const dStr = ord.createdAt.toISOString().split('T')[0];
       const phone = (ord.customerPhone || '').trim();
       if (!phone || !dayMap.has(dStr)) continue;
 
-      // Kiểm tra xem khách này từng có đơn hàng nào trước thời điểm đơn này tạo không
       const pastOrders = await prisma.order.count({
         where: {
           customerPhone: phone,
