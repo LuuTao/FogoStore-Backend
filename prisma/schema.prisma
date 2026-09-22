@@ -209,3 +209,18 @@ model PageView {
   @@index([userId])
   @@index([userEmail])
 }
+
+model SecurityLog {
+  id          String   @id @default(uuid())
+  ip          String
+  method      String
+  path        String
+  threatLevel String   // LOW, MEDIUM, HIGH, CRITICAL
+  eventType   String   // SQL_INJECTION_ATTEMPT, XSS_ATTEMPT, PATH_TRAVERSAL, BRUTE_FORCE, UNAUTHORIZED_ADMIN
+  payload     String?  @db.Text
+  userAgent   String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([threatLevel])
+  @@index([createdAt])
+}
