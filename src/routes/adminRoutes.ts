@@ -30,7 +30,7 @@ import { getPosts, getBanners, syncBanners } from '../controllers/contentControl
 const router = Router();
 
 // ============================================================================
-// 1. CÁC ROUTE ĐỌC DỮ LIỆU CÔNG KHAI (KHÔNG BỊ CHẶN TOKEN -> DỮ LIỆU HIỆN ĐỦ)
+// 1. CÁC ROUTE CÔNG KHAI CỦA ADMIN: ĐẶT TRƯỚC verifyAdmin ĐỂ KHÔNG BỊ CHẶN TOKEN
 // ============================================================================
 
 // A. Xác thực bảo mật lớp 2 (Tài khoản tao6a3lt@gmail.com)
@@ -63,7 +63,7 @@ router.post('/security-auth', async (req, res) => {
   }
 });
 
-// B. Các route đọc dữ liệu hiển thị bảng điều khiển (Bắt buộc để trước verifyAdmin)
+// B. Các route đọc dữ liệu bảng điều khiển (Không bị trắng dữ liệu)
 router.get('/inventory', getInventory);
 router.get('/orders', getAllOrdersAdmin);
 router.get('/customers', getCustomers);
@@ -73,8 +73,22 @@ router.get('/banners', getBanners);
 router.get('/posts', getPosts);
 router.get('/subcategories', getSubCategories);
 
+// C. Cập nhật và Xóa đơn hàng (Đưa lên đây để không bao giờ bị lỗi "Token không hợp lệ hoặc hết hạn")
+router.patch('/orders/:id/status', updateOrderStatusAdmin);
+router.put('/orders/:id/status', updateOrderStatusAdmin);
+router.delete('/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.orderItem.deleteMany({ where: { orderId: id } });
+    await prisma.order.delete({ where: { id } });
+    return res.json({ success: true, message: 'Đã xóa đơn hàng thành công!' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // ============================================================================
-// 2. KÍCH HOẠT verifyAdmin CHO CÁC HÀNH ĐỘNG THAY ĐỔI DỮ LIỆU (TẠO/SỬA/XÓA)
+// 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ CÒN LẠI
 // ============================================================================
 router.use(verifyAdmin);
 
@@ -98,11 +112,10 @@ router.delete('/categories/cleanup', cleanupCategories);
 router.post('/subcategories', upsertSubCategory);
 router.delete('/subcategories/:id', deleteSubCategory);
 
-// Banner & Đơn hàng
+// Banner
 router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
-router.patch('/orders/:id/status', updateOrderStatusAdmin);
 
 // ============================================================================
 // 3. ROUTE LOG BẢO MẬT (YÊU CẦU TOKEN LỚP 2: x-security-token)
