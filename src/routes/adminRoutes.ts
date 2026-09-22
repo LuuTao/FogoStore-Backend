@@ -1,8 +1,8 @@
 import { Router } from 'express';
+import jwt from 'jsonwebtoken';
 import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
 import { verifyAdmin } from '../lib/authMiddleware';
 import { prisma } from '../lib/prisma';
-import jwt from 'jsonwebtoken';
 import {
   getInventory,
   createFullProduct,
@@ -30,15 +30,52 @@ import { getPosts, getBanners, syncBanners } from '../controllers/contentControl
 const router = Router();
 
 // ============================================================================
-// BẮT BUỘC: ĐẶT verifyAdmin Ở ĐÂY ĐỂ BẢO VỆ 100% CÁC ROUTE PHÍA DƯỚI
+// 1. ROUTE CÔNG KHAI CỦA ADMIN: ĐẶT TRƯỚC verifyAdmin ĐỂ KHÔNG BỊ CHẶN TOKEN
+// ============================================================================
+
+// A. Xác thực bảo mật lớp 2 (Tài khoản tao6a3lt@gmail.com)
+router.post('/security-auth', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const targetEmail = process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com';
+    const targetPass = process.env.SECURITY_LOG_PASSWORD || 'MatKhauRiengCuaBan@2026';
+
+    if (email !== targetEmail || password !== targetPass) {
+      return res.status(401).json({
+        success: false,
+        message: 'Tài khoản hoặc mật khẩu lớp 2 không chính xác!',
+      });
+    }
+
+    const securityToken = jwt.sign(
+      { email, scope: 'SECURITY_LOG_ACCESS' },
+      process.env.JWT_SECRET || 'fogo_secret_key',
+      { expiresIn: '2h' }
+    );
+
+    return res.json({
+      success: true,
+      securityToken,
+      message: 'Xác thực bảo mật thành công!',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// B. Lấy danh sách tồn kho & sản phẩm (Đưa lên đây để không bao giờ bị trắng trang admin)
+router.get('/inventory', getInventory);
+
+// ============================================================================
+// 2. KÍCH HOẠT verifyAdmin BẢO VỆ TOÀN BỘ CÁC ROUTE CÒN LẠI PHÍA DƯỚI
 // ============================================================================
 router.use(verifyAdmin);
 
-// 1. Quản trị sản phẩm & Biến thể tồn kho
-router.get('/inventory', getInventory);
+// Quản trị biến thể tồn kho
 router.put('/inventory/:id', updateVariant);
 router.delete('/inventory/:id', deleteVariant);
 
+// Quản trị sản phẩm
 router.post('/products/full', uploadImage.array('images', 8), createFullProduct);
 router.delete('/products/:id', deleteProduct);
 router.post('/variants', uploadImage.single('image'), addVariant);
@@ -46,63 +83,36 @@ router.put('/variants/:id', uploadImage.array('images', 8), updateVariant);
 router.patch('/variants/:variantId', patchVariant);
 router.delete('/variants/:variantId', deleteVariant);
 
-// 2. Import Excel & Haravan
+// Import Excel & Haravan
 router.post('/products/import-excel', uploadMemory.single('file'), importExcel);
 router.post('/posts/import-haravan', uploadFile.single('file'), importHaravanPosts);
 
-// 3. Dọn dẹp danh mục rác cũ
+// Danh mục & SubCategory
 router.get('/categories/cleanup', cleanupCategories);
 router.delete('/categories/cleanup', cleanupCategories);
-
-// 4. Quản lý SubCategory (Icon lọc tròn dòng máy)
 router.get('/subcategories', getSubCategories);
 router.post('/subcategories', upsertSubCategory);
 router.delete('/subcategories/:id', deleteSubCategory);
 
-// 5. Quản lý Banners & Posts cho Admin
+// Banner & Bài viết
 router.get('/banners', getBanners);
 router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
 router.get('/posts', getPosts);
 
-// 6. Quản lý đơn hàng Admin
+// Đơn hàng
 router.get('/orders', getAllOrdersAdmin);
 router.patch('/orders/:id/status', updateOrderStatusAdmin);
 
-// 7. Thống kê & Phân tích truy cập
+// Thống kê
 router.get('/analytics', getAnalytics);
 router.get('/customers', getCustomers);
 router.get('/traffic-analytics', getTrafficAnalytics);
 
-// 1. API Xác thực mật khẩu cấp 2 riêng biệt
-router.post('/security-auth', async (req, res) => {
-  const { email, password } = req.body;
-  const targetEmail = process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com';
-  const targetPass = process.env.SECURITY_LOG_PASSWORD || 'MatKhauRiengCuaBan@2026';
-
-  if (email !== targetEmail || password !== targetPass) {
-    return res.status(401).json({
-      success: false,
-      message: 'Tài khoản hoặc mật khẩu lớp 2 không chính xác!',
-    });
-  }
-
-  // Cấp Token riêng có thời hạn ngắn (30 phút)
-  const securityToken = jwt.sign(
-    { email, scope: 'SECURITY_LOG_ACCESS' },
-    process.env.JWT_SECRET || 'fogo_secret_key',
-    { expiresIn: '30m' }
-  );
-
-  return res.json({
-    success: true,
-    securityToken,
-    message: 'Xác thực bảo mật thành công!',
-  });
-});
-
-// Middleware kiểm tra token cấp 2 trước khi mở log
+// ============================================================================
+// 3. MIDDLEWARE & ROUTE LOG (YÊU CẦU TOKEN LỚP 2: x-security-token)
+// ============================================================================
 const verifySecurityScope = (req: any, res: any, next: any) => {
   const secHeader = req.headers['x-security-token'];
   if (!secHeader) {
@@ -114,7 +124,7 @@ const verifySecurityScope = (req: any, res: any, next: any) => {
 
   try {
     const decoded: any = jwt.verify(secHeader, process.env.JWT_SECRET || 'fogo_secret_key');
-    if (decoded.scope !== 'SECURITY_LOG_ACCESS' || decoded.email !== (process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com')) {
+    if (decoded.scope !== 'SECURITY_LOG_ACCESS') {
       return res.status(403).json({ success: false, message: 'Quyền truy cập không hợp lệ!' });
     }
     next();
@@ -123,7 +133,6 @@ const verifySecurityScope = (req: any, res: any, next: any) => {
   }
 };
 
-// 2. Gắn verifySecurityScope vào route xem log
 router.get('/security-logs', verifySecurityScope, async (req, res) => {
   try {
     const logs = await prisma.securityLog.findMany({
@@ -145,7 +154,6 @@ router.get('/security-logs', verifySecurityScope, async (req, res) => {
   }
 });
 
-// Gắn verifySecurityScope vào route xóa log
 router.delete('/security-logs', verifySecurityScope, async (req, res) => {
   try {
     await prisma.securityLog.deleteMany({});
