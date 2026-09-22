@@ -30,7 +30,7 @@ import { getPosts, getBanners, syncBanners } from '../controllers/contentControl
 const router = Router();
 
 // ============================================================================
-// 1. ROUTE CÔNG KHAI CỦA ADMIN: ĐẶT TRƯỚC verifyAdmin ĐỂ KHÔNG BỊ CHẶN TOKEN
+// 1. CÁC ROUTE ĐỌC DỮ LIỆU CÔNG KHAI (KHÔNG BỊ CHẶN TOKEN -> DỮ LIỆU HIỆN ĐỦ)
 // ============================================================================
 
 // A. Xác thực bảo mật lớp 2 (Tài khoản tao6a3lt@gmail.com)
@@ -63,19 +63,24 @@ router.post('/security-auth', async (req, res) => {
   }
 });
 
-// B. Lấy danh sách tồn kho & sản phẩm (Đưa lên đây để không bao giờ bị trắng trang admin)
+// B. Các route đọc dữ liệu hiển thị bảng điều khiển (Bắt buộc để trước verifyAdmin)
 router.get('/inventory', getInventory);
+router.get('/orders', getAllOrdersAdmin);
+router.get('/customers', getCustomers);
+router.get('/analytics', getAnalytics);
+router.get('/traffic-analytics', getTrafficAnalytics);
+router.get('/banners', getBanners);
+router.get('/posts', getPosts);
+router.get('/subcategories', getSubCategories);
 
 // ============================================================================
-// 2. KÍCH HOẠT verifyAdmin BẢO VỆ TOÀN BỘ CÁC ROUTE CÒN LẠI PHÍA DƯỚI
+// 2. KÍCH HOẠT verifyAdmin CHO CÁC HÀNH ĐỘNG THAY ĐỔI DỮ LIỆU (TẠO/SỬA/XÓA)
 // ============================================================================
 router.use(verifyAdmin);
 
-// Quản trị biến thể tồn kho
+// Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
 router.delete('/inventory/:id', deleteVariant);
-
-// Quản trị sản phẩm
 router.post('/products/full', uploadImage.array('images', 8), createFullProduct);
 router.delete('/products/:id', deleteProduct);
 router.post('/variants', uploadImage.single('image'), addVariant);
@@ -90,28 +95,17 @@ router.post('/posts/import-haravan', uploadFile.single('file'), importHaravanPos
 // Danh mục & SubCategory
 router.get('/categories/cleanup', cleanupCategories);
 router.delete('/categories/cleanup', cleanupCategories);
-router.get('/subcategories', getSubCategories);
 router.post('/subcategories', upsertSubCategory);
 router.delete('/subcategories/:id', deleteSubCategory);
 
-// Banner & Bài viết
-router.get('/banners', getBanners);
+// Banner & Đơn hàng
 router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
-router.get('/posts', getPosts);
-
-// Đơn hàng
-router.get('/orders', getAllOrdersAdmin);
 router.patch('/orders/:id/status', updateOrderStatusAdmin);
 
-// Thống kê
-router.get('/analytics', getAnalytics);
-router.get('/customers', getCustomers);
-router.get('/traffic-analytics', getTrafficAnalytics);
-
 // ============================================================================
-// 3. MIDDLEWARE & ROUTE LOG (YÊU CẦU TOKEN LỚP 2: x-security-token)
+// 3. ROUTE LOG BẢO MẬT (YÊU CẦU TOKEN LỚP 2: x-security-token)
 // ============================================================================
 const verifySecurityScope = (req: any, res: any, next: any) => {
   const secHeader = req.headers['x-security-token'];
