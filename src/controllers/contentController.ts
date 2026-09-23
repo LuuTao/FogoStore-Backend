@@ -1,15 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 
-export const getPosts = async (req: Request, res: Response) => {
-  try {
-    const posts = await prisma.post.findMany({ orderBy: { createdAt: 'desc' } });
-    return res.json({ success: true, data: posts });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-};
-
 export const getBanners = async (req: Request, res: Response) => {
   try {
     const banners = await prisma.banner.findMany({
