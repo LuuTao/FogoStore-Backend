@@ -25,6 +25,7 @@
     "google-auth-library": "^11.1.0",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "mammoth": "^1.12.3",
     "multer": "^2.3.0",
     "node-xlsx": "^0.24.0",
     "nodemailer": "^10.0.9",

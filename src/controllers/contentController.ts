@@ -1,13 +1,18 @@
 import { Request, Response } from 'express';
+import fs from 'fs';
+import ExcelJS from 'exceljs';
+import mammoth from 'mammoth';
 import { prisma } from '../lib/prisma';
 
+// ==========================================
+// BANNER MANAGEMENT
+// ==========================================
 export const getBanners = async (req: Request, res: Response) => {
   try {
     const banners = await prisma.banner.findMany({
       orderBy: { order: 'asc' },
     });
 
-    // Map dữ liệu để tương thích cả 2 cách gọi trường của frontend
     const mapped = banners.map((b) => ({
       id: b.id,
       title: b.title,
@@ -53,7 +58,6 @@ export const syncBanners = async (req: Request, res: Response) => {
       };
     });
 
-    // Xóa toàn bộ và cập nhật đồng bộ lại vào DB
     await prisma.$transaction([
       prisma.banner.deleteMany({}),
       prisma.banner.createMany({
@@ -73,7 +77,9 @@ export const syncBanners = async (req: Request, res: Response) => {
   }
 };
 
-// 1. Lấy danh sách bài viết
+// ==========================================
+// POSTS CRUD MANAGEMENT
+// ==========================================
 export const getPosts = async (req: Request, res: Response) => {
   try {
     const posts = await prisma.post.findMany({
@@ -85,7 +91,6 @@ export const getPosts = async (req: Request, res: Response) => {
   }
 };
 
-// 2. Thêm bài viết mới
 export const createPost = async (req: Request, res: Response) => {
   try {
     const { title, slug, summary, content, thumbnail } = req.body;
@@ -117,7 +122,6 @@ export const createPost = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Cập nhật bài viết
 export const updatePost = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -140,7 +144,6 @@ export const updatePost = async (req: Request, res: Response) => {
   }
 };
 
-// 4. Xóa một bài viết
 export const deletePost = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -151,7 +154,6 @@ export const deletePost = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Xóa nhiều bài viết hàng loạt
 export const deletePostsBulk = async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
@@ -166,5 +168,128 @@ export const deletePostsBulk = async (req: Request, res: Response) => {
     return res.json({ success: true, message: `Đã xóa thành công ${result.count} bài viết!` });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==========================================
+// IMPORT POSTS (EXCEL, CSV, WORD .DOCX)
+// ==========================================
+export const importPostsFromFile = async (req: any, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Chưa đính kèm file (.xlsx, .csv, .docx)!' });
+    }
+
+    const filePath = req.file.path;
+    const originalName = req.file.originalname.toLowerCase();
+    let importedCount = 0;
+
+    // 1. FILE WORD (.DOCX)
+    if (originalName.endsWith('.docx')) {
+      const result = await mammoth.convertToHtml({ path: filePath });
+      const htmlContent = result.value;
+
+      const rawTitle = req.file.originalname.replace(/\.docx$/i, '').trim();
+      const cleanSlug = rawTitle
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[đĐ]/g, 'd')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+      const plainText = htmlContent.replace(/<[^>]+>/g, ' ').trim();
+      const summary = plainText.slice(0, 180) + (plainText.length > 180 ? '...' : '');
+
+      await prisma.post.create({
+        data: {
+          title: rawTitle,
+          slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
+          content: htmlContent,
+          summary,
+        },
+      });
+
+      importedCount = 1;
+    } 
+    // 2. FILE EXCEL / CSV (.XLSX, .XLS, .CSV)
+    else if (originalName.endsWith('.xlsx') || originalName.endsWith('.xls') || originalName.endsWith('.csv')) {
+      const workbook = new ExcelJS.Workbook();
+      if (originalName.endsWith('.csv')) {
+        await workbook.csv.readFile(filePath);
+      } else {
+        await workbook.xlsx.readFile(filePath);
+      }
+
+      const worksheet = workbook.worksheets[0];
+      if (!worksheet) {
+        throw new Error('File không chứa trang dữ liệu!');
+      }
+
+      const headers: Record<number, string> = {};
+      worksheet.getRow(1).eachCell((cell, col) => {
+        headers[col] = cell.value?.toString().trim() || '';
+      });
+
+      for (let r = 2; r <= worksheet.rowCount; r++) {
+        const row = worksheet.getRow(r);
+        if (!row.hasValues) continue;
+
+        const rowData: Record<string, any> = {};
+        row.eachCell((cell, col) => {
+          if (headers[col]) rowData[headers[col]] = cell.value;
+        });
+
+        const title = rowData['Title'] || rowData['Tiêu đề'] || rowData['Tên bài viết'];
+        const rawHandle = rowData['Handle'] || rowData['Slug'] || rowData['Đường dẫn'];
+        const content = rowData['Body (HTML)'] || rowData['Nội dung'] || rowData['Content'] || '';
+        const summary = rowData['Summary'] || rowData['Tóm tắt'] || '';
+        const thumbnail = rowData['Image Src'] || rowData['Ảnh đại diện'] || '';
+
+        if (!title) continue;
+
+        const cleanSlug = (rawHandle || title)
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[đĐ]/g, 'd')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+
+        await prisma.post.upsert({
+          where: { slug: cleanSlug },
+          update: {
+            title: String(title),
+            content: String(content),
+            summary: String(summary),
+            thumbnail: String(thumbnail),
+          },
+          create: {
+            title: String(title),
+            slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
+            content: String(content),
+            summary: String(summary),
+            thumbnail: String(thumbnail),
+          },
+        });
+
+        importedCount++;
+      }
+    } else {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return res.status(400).json({ success: false, message: 'Định dạng file không hỗ trợ (.xlsx, .csv, .docx)!' });
+    }
+
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    return res.json({
+      success: true,
+      message: `Đã nhập thành công ${importedCount} bài viết vào Database!`,
+    });
+  } catch (err: any) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    return res.status(500).json({ success: false, message: 'Lỗi nạp file: ' + err.message });
   }
 };

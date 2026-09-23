@@ -13,7 +13,6 @@ import {
   deleteVariant,
   importExcel,
   getAnalytics,
-  importHaravanPosts,
   createBannersBulk,
   deleteBanner,
   cleanupCategories,
@@ -33,17 +32,15 @@ import {
   deletePost, 
   deletePostsBulk, 
   getBanners, 
-  syncBanners 
+  syncBanners,
+  importPostsFromFile,
 } from '../controllers/contentController';
-
 
 const router = Router();
 
 // ============================================================================
-// 1. CÁC ROUTE CÔNG KHAI CỦA ADMIN: ĐẶT TRƯỚC verifyAdmin ĐỂ KHÔNG BỊ CHẶN TOKEN
+// 1. ROUTE CÔNG KHAI ADMIN: ĐỌC DỮ LIỆU & AUTH LỚP 2
 // ============================================================================
-
-// A. Xác thực bảo mật lớp 2 (Tài khoản tao6a3lt@gmail.com)
 router.post('/security-auth', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -73,7 +70,7 @@ router.post('/security-auth', async (req, res) => {
   }
 });
 
-// B. Các route đọc dữ liệu bảng điều khiển (Không bị trắng dữ liệu)
+// Các route đọc dữ liệu bảng điều khiển (Không chặn token để tránh trắng trang)
 router.get('/inventory', getInventory);
 router.get('/orders', getAllOrdersAdmin);
 router.get('/customers', getCustomers);
@@ -83,7 +80,7 @@ router.get('/banners', getBanners);
 router.get('/posts', getPosts);
 router.get('/subcategories', getSubCategories);
 
-// C. Cập nhật và Xóa đơn hàng (Đưa lên đây để không bao giờ bị lỗi "Token không hợp lệ hoặc hết hạn")
+// Cập nhật và Xóa đơn hàng trực tiếp
 router.patch('/orders/:id/status', updateOrderStatusAdmin);
 router.put('/orders/:id/status', updateOrderStatusAdmin);
 router.delete('/orders/:id', async (req, res) => {
@@ -98,16 +95,17 @@ router.delete('/orders/:id', async (req, res) => {
 });
 
 // ============================================================================
-// 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ CÒN LẠI
+// 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ
 // ============================================================================
 router.use(verifyAdmin);
-router.get('/posts', getPosts);
 
-// Sau router.use(verifyAdmin);
+// Quản trị bài viết CMS (Thêm, Sửa, Xóa, Xóa hàng loạt, Import Excel/Word)
 router.post('/posts', createPost);
 router.put('/posts/:id', updatePost);
 router.delete('/posts/:id', deletePost);
 router.post('/posts/bulk-delete', deletePostsBulk);
+router.post('/posts/import', uploadFile.single('file'), importPostsFromFile);
+router.post('/posts/import-haravan', uploadFile.single('file'), importPostsFromFile);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
@@ -119,9 +117,8 @@ router.put('/variants/:id', uploadImage.array('images', 8), updateVariant);
 router.patch('/variants/:variantId', patchVariant);
 router.delete('/variants/:variantId', deleteVariant);
 
-// Import Excel & Haravan
+// Import Sản phẩm Excel
 router.post('/products/import-excel', uploadMemory.single('file'), importExcel);
-router.post('/posts/import-haravan', uploadFile.single('file'), importHaravanPosts);
 
 // Danh mục & SubCategory
 router.get('/categories/cleanup', cleanupCategories);
@@ -133,7 +130,6 @@ router.delete('/subcategories/:id', deleteSubCategory);
 router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
-
 
 // ============================================================================
 // 3. ROUTE LOG BẢO MẬT (YÊU CẦU TOKEN LỚP 2: x-security-token)
