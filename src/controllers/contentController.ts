@@ -81,3 +81,99 @@ export const syncBanners = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
+
+// 1. Lấy danh sách bài viết
+export const getPosts = async (req: Request, res: Response) => {
+  try {
+    const posts = await prisma.post.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.json({ success: true, data: posts });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 2. Thêm bài viết mới
+export const createPost = async (req: Request, res: Response) => {
+  try {
+    const { title, slug, summary, content, thumbnail } = req.body;
+    if (!title) {
+      return res.status(400).json({ success: false, message: 'Tiêu đề bài viết không được để trống' });
+    }
+
+    const cleanSlug = (slug || title)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    const newPost = await prisma.post.create({
+      data: {
+        title,
+        slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
+        summary: summary || '',
+        content: content || '',
+        thumbnail: thumbnail || '',
+      },
+    });
+
+    return res.status(201).json({ success: true, data: newPost, message: 'Tạo bài viết thành công!' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 3. Cập nhật bài viết
+export const updatePost = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { title, slug, summary, content, thumbnail } = req.body;
+
+    const updated = await prisma.post.update({
+      where: { id: String(id) },
+      data: {
+        ...(title && { title }),
+        ...(slug && { slug }),
+        ...(summary !== undefined && { summary }),
+        ...(content !== undefined && { content }),
+        ...(thumbnail !== undefined && { thumbnail }),
+      },
+    });
+
+    return res.json({ success: true, data: updated, message: 'Cập nhật bài viết thành công!' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 4. Xóa một bài viết
+export const deletePost = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    await prisma.post.delete({ where: { id: String(id) } });
+    return res.json({ success: true, message: 'Đã xóa bài viết thành công!' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 5. Xóa nhiều bài viết hàng loạt
+export const deletePostsBulk = async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Vui lòng chọn ít nhất 1 bài viết để xóa' });
+    }
+
+    const result = await prisma.post.deleteMany({
+      where: { id: { in: ids } },
+    });
+
+    return res.json({ success: true, message: `Đã xóa thành công ${result.count} bài viết!` });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};

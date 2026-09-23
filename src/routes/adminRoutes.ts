@@ -25,7 +25,17 @@ import {
   updateOrderStatusAdmin,
   getTrafficAnalytics,
 } from '../controllers/adminController';
-import { getPosts, getBanners, syncBanners } from '../controllers/contentController';
+
+import { 
+  getPosts, 
+  createPost, 
+  updatePost, 
+  deletePost, 
+  deletePostsBulk, 
+  getBanners, 
+  syncBanners 
+} from '../controllers/contentController';
+
 
 const router = Router();
 
@@ -91,6 +101,13 @@ router.delete('/orders/:id', async (req, res) => {
 // 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ CÒN LẠI
 // ============================================================================
 router.use(verifyAdmin);
+router.get('/posts', getPosts);
+
+// Sau router.use(verifyAdmin);
+router.post('/posts', createPost);
+router.put('/posts/:id', updatePost);
+router.delete('/posts/:id', deletePost);
+router.post('/posts/bulk-delete', deletePostsBulk);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
@@ -116,6 +133,7 @@ router.delete('/subcategories/:id', deleteSubCategory);
 router.post('/banners/sync', syncBanners);
 router.post('/banners/bulk', createBannersBulk);
 router.delete('/banners/:id', deleteBanner);
+
 
 // ============================================================================
 // 3. ROUTE LOG BẢO MẬT (YÊU CẦU TOKEN LỚP 2: x-security-token)
