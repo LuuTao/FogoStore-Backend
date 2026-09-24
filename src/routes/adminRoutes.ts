@@ -100,6 +100,19 @@ router.delete('/orders/:id', async (req, res) => {
 router.use(verifyAdmin);
 
 // Quản trị bài viết CMS (Thêm, Sửa, Xóa, Xóa hàng loạt, Import Excel/Word)
+// Route upload ảnh bài viết / tin tức
+router.post('/upload-image', uploadImage.single('image'), (req: any, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Chưa có file ảnh được tải lên!' });
+    }
+    // Trả về đường dẫn ảnh vừa upload
+    const imageUrl = `/uploads/${req.file.filename}`;
+    return res.json({ success: true, imageUrl, message: 'Tải ảnh lên thành công!' });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
 router.post('/posts', createPost);
 router.put('/posts/:id', updatePost);
 router.delete('/posts/:id', deletePost);
