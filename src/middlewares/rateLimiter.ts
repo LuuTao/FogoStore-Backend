@@ -14,7 +14,6 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
   const freezeSeconds = options.freezeSeconds || 150; // 2.5 phút
 
   return async (req: Request, res: Response, next: NextFunction) => {
-    // 1. Lấy địa chỉ IP người dùng
     const clientIp =
       (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
       req.socket.remoteAddress ||
@@ -24,12 +23,12 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
     const rateKey = `rate:${clientIp}:${Math.floor(Date.now() / (windowSeconds * 1000))}`;
 
     try {
-      // Bỏ qua nếu Redis chưa sẵn sàng để không chặn nhầm request
+      // Bỏ qua nếu ioredis chưa sẵn sàng để tránh làm nghẽn API
       if (redis.status !== 'ready') {
         return next();
       }
 
-      // 2. Kiểm tra IP có đang trong danh sách bị ĐÓNG BĂNG không
+      // 1. Kiểm tra IP có bị đóng băng không
       const isFrozen = await redis.get(freezeKey);
       if (isFrozen) {
         const remainingTtl = await redis.ttl(freezeKey);
@@ -45,19 +44,18 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
         });
       }
 
-      // 3. Tăng số lượt gọi trong cửa sổ hiện tại
+      // 2. Tăng số đếm lượt gọi
       const currentCount = await redis.incr(rateKey);
       if (currentCount === 1) {
         await redis.expire(rateKey, windowSeconds * 2);
       }
 
-      // 4. Nếu vượt quá giới hạn -> Đóng băng 2.5 phút và lưu vào SecurityLog
+      // 3. Nếu vượt quá giới hạn -> Đóng băng 2.5 phút và ghi SecurityLog
       if (currentCount > maxRequests) {
         // Cú pháp chuẩn của ioredis: 'EX', freezeSeconds
         await redis.set(freezeKey, 'FROZEN', 'EX', freezeSeconds);
         await redis.del(rateKey);
 
-        // Lưu cảnh báo an ninh vào cơ sở dữ liệu
         prisma.securityLog
           .create({
             data: {
@@ -90,7 +88,6 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
         });
       }
 
-      // Đính kèm các HTTP Header tiêu chuẩn
       res.setHeader('X-RateLimit-Limit', maxRequests);
       res.setHeader('X-RateLimit-Remaining', Math.max(0, maxRequests - currentCount));
 
