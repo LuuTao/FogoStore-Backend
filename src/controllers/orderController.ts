@@ -1,15 +1,15 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ==========================================
-// 1. TẠO ĐƠN HÀNG (Hỗ trợ Guest & Tài khoản)
+// 1. TẠO ĐƠN HÀNG (Trừ kho tự động & Xác nhận QR)
 // ==========================================
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
 
     const userId = body.userId || (req as any).user?.id || null;
-
     const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
     const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.tel || '').toString().trim();
     const customerEmail = (body.customerEmail || body.email || '').toString().trim() || null;
@@ -35,26 +35,48 @@ export const createOrder = async (req: Request, res: Response) => {
     }
 
     const orderCode = `FG-${Math.floor(100000 + Math.random() * 900000)}`;
-
     const subTotal = Number(body.subTotal || body.totalAmount || 0);
     const shippingFee = Number(body.shippingFee || 0);
     const discountAmount = Number(body.discountAmount || 0);
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
-    const formattedItems = await Promise.all(
-      rawItems.map(async (item: any) => {
-        const rawVariantId = String(item.variantId || item.id || '');
+    // Nhận diện phương thức thanh toán
+    const rawMethod = (body.paymentMethod || 'COD').toString().toLowerCase();
+    const isQrPayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((m) => rawMethod.includes(m));
+    const initialPaymentStatus = isQrPayment ? 'PAID' : (body.paymentStatus || 'PENDING');
 
+    // Chạy trong Transaction: Vừa kiểm tra trừ tồn kho, vừa tạo đơn
+    const newOrder = await prisma.$transaction(async (tx) => {
+      const formattedItems = [];
+
+      for (const item of rawItems) {
+        const rawVariantId = String(item.variantId || item.id || '');
         let validVariantId: string | null = null;
+
         if (rawVariantId && !rawVariantId.startsWith('mock-') && !rawVariantId.startsWith('fallback-')) {
-          const exists = await prisma.productVariant.findUnique({
+          const variant = await tx.productVariant.findUnique({
             where: { id: rawVariantId },
-            select: { id: true },
           });
-          if (exists) validVariantId = exists.id;
+
+          if (variant) {
+            const requestedQty = Number(item.quantity || 1);
+            if (variant.stock < requestedQty) {
+              throw new Error(`Sản phẩm "${item.name || variant.slug}" chỉ còn ${variant.stock} chiếc, không đủ số lượng bạn yêu cầu!`);
+            }
+
+            // Trừ số lượng tồn kho
+            await tx.productVariant.update({
+              where: { id: variant.id },
+              data: {
+                stock: { decrement: requestedQty },
+              },
+            });
+
+            validVariantId = variant.id;
+          }
         }
 
-        return {
+        formattedItems.push({
           variantId: validVariantId,
           productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
           storage: String(item.storage || item.version || 'Tiêu chuẩn'),
@@ -62,39 +84,43 @@ export const createOrder = async (req: Request, res: Response) => {
           price: Number(item.price || 0),
           quantity: Number(item.quantity || 1),
           imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
-        };
-      })
-    );
+        });
+      }
 
-    const newOrder = await prisma.order.create({
-      data: {
-        orderCode,
-        userId: userId || undefined,
-        customerName,
-        customerPhone,
-        customerEmail,
-        gender: body.gender || 'anh',
-        deliveryMethod: body.deliveryMethod || (body.address ? 'Giao hàng tận nơi' : 'Nhận tại cửa hàng'),
-        province: body.province || body.city || '',
-        district: body.district || '',
-        address: body.address || body.specificAddress || '',
-        storeAddress: body.storeAddress || '',
-        note: body.note || '',
-        paymentMethod: body.paymentMethod || 'COD',
-        paymentStatus: 'PENDING',
-        orderStatus: 'CONFIRMED',
-        subTotal,
-        discountAmount,
-        shippingFee,
-        totalAmount,
-        needVat: Boolean(body.needVat),
-        vatInfo: body.vatInfo || undefined,
-        items: {
-          create: formattedItems,
+      // Tạo đơn hàng chính thức
+      return await tx.order.create({
+        data: {
+          orderCode,
+          userId: userId || undefined,
+          customerName,
+          customerPhone,
+          customerEmail,
+          gender: body.gender || 'anh',
+          deliveryMethod: body.deliveryMethod || (body.address ? 'Giao hàng tận nơi' : 'Nhận tại cửa hàng'),
+          province: body.province || body.city || '',
+          district: body.district || '',
+          address: body.address || body.specificAddress || '',
+          storeAddress: body.storeAddress || '',
+          note: body.note || '',
+          paymentMethod: body.paymentMethod || 'COD',
+          paymentStatus: initialPaymentStatus,
+          orderStatus: 'CONFIRMED',
+          subTotal,
+          discountAmount,
+          shippingFee,
+          totalAmount,
+          needVat: Boolean(body.needVat),
+          vatInfo: body.vatInfo || undefined,
+          items: {
+            create: formattedItems,
+          },
         },
-      },
-      include: { items: true },
+        include: { items: true },
+      });
     });
+
+    // Làm mới cache sản phẩm ngoài trang chủ để người xem thấy ngay tồn kho mới
+    clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.status(201).json({
       success: true,
@@ -103,12 +129,12 @@ export const createOrder = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Lỗi khi tạo đơn hàng:', error);
-    return res.status(500).json({ success: false, error: error.message || 'Lỗi lưu đơn hàng' });
+    return res.status(400).json({ success: false, error: error.message || 'Lỗi lưu đơn hàng' });
   }
 };
 
 // ==========================================
-// 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ (Đã ép kiểu string an toàn)
+// 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ
 // ==========================================
 export const getOrderByCode = async (req: Request, res: Response) => {
   try {
@@ -140,7 +166,7 @@ export const getOrderByCode = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 3. KHÁCH HÀNG HỦY ĐƠN HÀNG (Đã ép kiểu string an toàn)
+// 3. KHÁCH HÀNG HỦY ĐƠN (Hoàn tồn kho tự động)
 // ==========================================
 export const cancelOrderCustomer = async (req: Request, res: Response) => {
   try {
@@ -155,24 +181,41 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
       where: {
         OR: [{ orderCode: String(orderCode) }, { id: String(orderCode) }],
       },
+      include: { items: true },
     });
 
     if (!order) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng để hủy' });
     }
 
-    if (order.orderStatus === 'SHIPPING' || order.orderStatus === 'COMPLETED' || order.orderStatus === 'DELIVERED') {
+    if (['SHIPPING', 'COMPLETED', 'DELIVERED', 'CANCELLED'].includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        error: 'Đơn hàng đang giao hoặc đã hoàn tất, không thể hủy trực tuyến. Vui lòng gọi CSKH!',
+        error: 'Đơn hàng đang giao, đã hoàn tất hoặc đã hủy trước đó, không thể hủy tiếp!',
       });
     }
 
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: { orderStatus: 'CANCELLED' },
-      include: { items: true },
+    // Hoàn lại số lượng tồn kho cho các biến thể trong đơn
+    const updated = await prisma.$transaction(async (tx) => {
+      for (const item of order.items) {
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: {
+              stock: { increment: item.quantity },
+            },
+          }).catch(() => {});
+        }
+      }
+
+      return await tx.order.update({
+        where: { id: order.id },
+        data: { orderStatus: 'CANCELLED' },
+        include: { items: true },
+      });
     });
+
+    clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.json({
       success: true,
@@ -185,7 +228,7 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 4. LẤY TẤT CẢ ĐƠN HÀNG (Dành cho trang Admin)
+// 4. LẤY TẤT CẢ ĐƠN HÀNG (Admin)
 // ==========================================
 export const getAllOrdersAdmin = async (req: Request, res: Response) => {
   try {
@@ -233,11 +276,9 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
 export const deleteOrder = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    // 1. Xóa các sản phẩm con trước
     await prisma.orderItem.deleteMany({ where: { orderId: String(id) } });
-    // 2. Sau đó mới xóa đơn hàng chính
     await prisma.order.delete({ where: { id: String(id) } });
-    return res.json({ success: true, message: 'Đã xóa' });
+    return res.json({ success: true, message: 'Đã xóa đơn hàng' });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -249,7 +290,6 @@ export const deleteOrder = async (req: Request, res: Response) => {
 export const deleteBulkOrders = async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
-
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, error: 'Danh sách ID đơn hàng không hợp lệ' });
     }
@@ -264,13 +304,12 @@ export const deleteBulkOrders = async (req: Request, res: Response) => {
 
     return res.json({ success: true, message: `Đã xóa thành công ${ids.length} đơn hàng` });
   } catch (error: any) {
-    console.error('Lỗi khi xóa hàng loạt đơn hàng:', error);
     return res.status(500).json({ success: false, error: error.message || 'Không thể xóa hàng loạt đơn hàng' });
   }
 };
 
 // ==========================================
-// 8. LẤY DANH SÁCH ĐƠN HÀNG CỦA TÀI KHOẢN CÁ NHÂN
+// 8. LẤY DANH SÁCH ĐƠN HÀNG THEO TÀI KHOẢN
 // ==========================================
 export const getMyOrders = async (req: Request, res: Response) => {
   try {
@@ -289,12 +328,12 @@ export const getMyOrders = async (req: Request, res: Response) => {
 
     return res.json({ success: true, data: orders });
   } catch (error: any) {
-    console.error('Lỗi lấy danh sách đơn của tài khoản:', error);
     return res.status(500).json({ success: false, error: error.message || 'Lỗi lấy lịch sử đơn hàng' });
   }
 };
+
 // ==========================================
-// 9. KHÁCH HÀNG CHỈNH SỬA THÔNG TIN NHẬN HÀNG
+// 9. KHÁCH HÀNG CẬP NHẬT THÔNG TIN ĐƠN
 // ==========================================
 export const updateOrderCustomer = async (req: Request, res: Response) => {
   try {

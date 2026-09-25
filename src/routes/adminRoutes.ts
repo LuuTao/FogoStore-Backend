@@ -4,6 +4,8 @@ import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
 import { verifyAdmin } from '../lib/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { deleteProductsBulk } from '../controllers/productController';
+import { slidingWindowWithFreeze } from '../middlewares/rateLimiter';
+
 import {
   getInventory,
   createFullProduct,
@@ -26,23 +28,30 @@ import {
   getTrafficAnalytics,
 } from '../controllers/adminController';
 
-import { 
-  getPosts, 
-  createPost, 
-  updatePost, 
-  deletePost, 
-  deletePostsBulk, 
-  getBanners, 
+import {
+  getPosts,
+  createPost,
+  updatePost,
+  deletePost,
+  deletePostsBulk,
+  getBanners,
   syncBanners,
   importPostsFromFile,
 } from '../controllers/contentController';
 
 const router = Router();
 
+// Khởi tạo bộ giới hạn: Quá 5 lần / 60 giây -> Đóng băng 150 giây (2.5 phút)
+const adminActionLimiter = slidingWindowWithFreeze({
+  windowSeconds: 60,
+  maxRequests: 5,
+  freezeSeconds: 150,
+});
+
 // ============================================================================
 // 1. ROUTE CÔNG KHAI ADMIN: ĐỌC DỮ LIỆU & AUTH LỚP 2
 // ============================================================================
-router.post('/security-auth', async (req, res) => {
+router.post('/security-auth', adminActionLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const targetEmail = process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com';
@@ -101,13 +110,11 @@ router.delete('/orders/:id', async (req, res) => {
 router.use(verifyAdmin);
 
 // Quản trị bài viết CMS (Thêm, Sửa, Xóa, Xóa hàng loạt, Import Excel/Word)
-// Route upload ảnh bài viết / tin tức
 router.post('/upload-image', uploadImage.single('image'), (req: any, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'Chưa có file ảnh được tải lên!' });
     }
-    // Trả về đường dẫn ảnh vừa upload
     const imageUrl = `/uploads/${req.file.filename}`;
     return res.json({ success: true, imageUrl, message: 'Tải ảnh lên thành công!' });
   } catch (error: any) {
@@ -117,9 +124,9 @@ router.post('/upload-image', uploadImage.single('image'), (req: any, res) => {
 router.post('/posts', createPost);
 router.put('/posts/:id', updatePost);
 router.delete('/posts/:id', deletePost);
-router.post('/posts/bulk-delete', deletePostsBulk);
-router.post('/posts/import', uploadFile.single('file'), importPostsFromFile);
-router.post('/posts/import-haravan', uploadFile.single('file'), importPostsFromFile);
+router.post('/posts/bulk-delete', adminActionLimiter, deletePostsBulk);
+router.post('/posts/import', adminActionLimiter, uploadFile.single('file'), importPostsFromFile);
+router.post('/posts/import-haravan', adminActionLimiter, uploadFile.single('file'), importPostsFromFile);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
@@ -131,9 +138,9 @@ router.put('/variants/:id', uploadImage.array('images', 8), updateVariant);
 router.patch('/variants/:variantId', patchVariant);
 router.delete('/variants/:variantId', deleteVariant);
 
-// Import Sản phẩm Excel
-router.post('/products/import-excel', uploadMemory.single('file'), importExcel);
-router.post('/products/bulk-delete', deleteProductsBulk);
+// Import Sản phẩm Excel & Xóa hàng loạt (Gắn Limiter chống spam / treo server)
+router.post('/products/import-excel', adminActionLimiter, uploadMemory.single('file'), importExcel);
+router.post('/products/bulk-delete', adminActionLimiter, deleteProductsBulk);
 
 // Danh mục & SubCategory
 router.get('/categories/cleanup', cleanupCategories);
@@ -164,7 +171,7 @@ const verifySecurityScope = (req: any, res: any, next: any) => {
       return res.status(403).json({ success: false, message: 'Quyền truy cập không hợp lệ!' });
     }
     next();
-  } catch (err) {
+  } catch {
     return res.status(403).json({ success: false, message: 'Phiên lớp 2 đã hết hạn!' });
   }
 };
