@@ -68,10 +68,14 @@ export const createFullProduct = async (req: Request, res: Response) => {
             const st = (v.storage || 'Tiêu chuẩn').toString().replace(/\//g, '-');
             const p = Number(v.price || 0);
             const s = p <= 0 ? 0 : Number(v.stock || 0);
+            const orig = (v.origin || 'Việt Nam').toString().trim();
+            const col = (v.color || 'Tiêu chuẩn').toString().trim();
+
             return {
               storage: st,
-              color: v.color || 'Tiêu chuẩn',
-              slug: `${st.toLowerCase()}-${(v.color || 'tc')
+              color: col,
+              origin: orig,
+              slug: `${st.toLowerCase()}-${col
                 .toLowerCase()
                 .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-3)}`,
               price: p,
@@ -131,7 +135,7 @@ export const deleteProductsBulk = async (req: Request, res: Response) => {
 // ==========================================
 export const addVariant = async (req: Request, res: Response) => {
   try {
-    const { productId, storage, color, price, originalPrice, stock, imageUrl } = req.body;
+    const { productId, storage, color, origin, price, originalPrice, stock, imageUrl } = req.body;
     if (!productId || !storage || !color) {
       return res.status(400).json({ success: false, error: 'Vui lòng điền đủ thông tin bắt buộc' });
     }
@@ -139,6 +143,7 @@ export const addVariant = async (req: Request, res: Response) => {
     const cleanSt = storage.toString().replace(/\//g, '-');
     const p = Number(price || 0);
     const s = p <= 0 ? 0 : Number(stock || 0);
+    const orig = (origin || 'Việt Nam').toString().trim();
 
     const variantSlug = `${cleanSt.toLowerCase()}-${color
       .toLowerCase()
@@ -149,6 +154,7 @@ export const addVariant = async (req: Request, res: Response) => {
         productId,
         storage: cleanSt,
         color,
+        origin: orig,
         slug: variantSlug,
         price: p,
         originalPrice: Number(originalPrice || p),
@@ -170,7 +176,7 @@ export const addVariant = async (req: Request, res: Response) => {
 export const updateVariant = async (req: Request, res: Response) => {
   try {
     const id = (req.params.id || req.params.variantId) as string;
-    const { storage, color, price, originalPrice, stock, images } = req.body;
+    const { storage, color, origin, price, originalPrice, stock, images } = req.body;
 
     let formattedImages: string[] = [];
     if (Array.isArray(images)) {
@@ -192,6 +198,7 @@ export const updateVariant = async (req: Request, res: Response) => {
       data: {
         ...(storage !== undefined && { storage: String(storage).replace(/\//g, '-') }),
         ...(color !== undefined && { color: String(color) }),
+        ...(origin !== undefined && { origin: String(origin) }),
         ...(p !== undefined && { price: p }),
         ...(originalPrice !== undefined && { originalPrice: parseFloat(originalPrice) }),
         ...(s !== undefined && { stock: s }),
@@ -246,7 +253,7 @@ export const deleteVariant = async (req: Request, res: Response) => {
 };
 
 // =========================================================================================
-// 8. IMPORT SẢN PHẨM THEO FORM BÁO CÁO CỦA FOGO STORE (VÀ TƯƠNG THÍCH HARAVAN)
+// 8. IMPORT SẢN PHẨM TỰ ĐỘNG - TÁCH CHUẨN DUNG LƯỢNG, MÀU SẮC VÀ XUẤT XỨ
 // =========================================================================================
 export const importExcel = async (req: any, res: Response) => {
   try {
@@ -267,7 +274,6 @@ export const importExcel = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, error: 'File Excel rỗng hoặc không chứa dữ liệu hàng' });
     }
 
-    // Đọc header cột và chuyển về chữ thường để khớp chính xác không phân biệt hoa/thường
     const headerMap: Record<string, number> = {};
     worksheet.getRow(1).eachCell((cell, colNumber) => {
       const headerText = cell.value?.toString().trim().toLowerCase() || '';
@@ -276,7 +282,6 @@ export const importExcel = async (req: any, res: Response) => {
       }
     });
 
-    // Hàm lấy giá trị cell linh hoạt theo danh sách tên cột dự phòng
     const getRowValue = (row: any, candidates: string[]): string => {
       for (const name of candidates) {
         const colIdx = headerMap[name.toLowerCase()];
@@ -302,7 +307,6 @@ export const importExcel = async (req: any, res: Response) => {
       return clean ? Number(clean) : 0;
     };
 
-    // Cache danh mục để không phải query nhiều lần
     const categoryCache: Record<string, string> = {};
     const defaultCategories = ['iPhone', 'iPhone Cũ', 'MacBook', 'MacBook Cũ', 'iPad', 'iPad Cũ', 'Watch', 'Watch Cũ', 'Phụ kiện'];
     for (const cName of defaultCategories) {
@@ -310,7 +314,6 @@ export const importExcel = async (req: any, res: Response) => {
       if (found) categoryCache[cName] = found.id;
     }
 
-    // 1. Thu thập và gom nhóm tất cả các dòng Excel theo Sản phẩm Model cha
     const modelGroupMap = new Map<string, {
       productName: string;
       parentSlug: string;
@@ -323,37 +326,67 @@ export const importExcel = async (req: any, res: Response) => {
       const row = worksheet.getRow(r);
       if (!row.hasValues) continue;
 
-      // Đọc các trường theo cả 2 chuẩn: Báo cáo FoGo và Haravan
       const rawFullName = getRowValue(row, ['tên sản phẩm', 'tên', 'title', 'product name']);
       if (!rawFullName) continue;
 
-      const rawModelSlug = getRowValue(row, ['mã model (slug cha)', 'mã model', 'model slug', 'parent slug']);
-      const rawCategory = getRowValue(row, ['danh mục', 'loại sản phẩm', 'product type', 'category']);
-      const rawStorage = getRowValue(row, ['dung lượng / kích thước', 'dung lượng', 'giá trị thuộc tính 1', 'tùy chọn 1']);
-      const rawColor = getRowValue(row, ['màu sắc', 'giá trị thuộc tính 2', 'tùy chọn 2']);
-      const rawPrice = getRowValue(row, ['giá bán (vnđ)', 'giá bán', 'giá', 'variant price']);
-      const rawOriginalPrice = getRowValue(row, ['giá gốc (vnđ)', 'giá gốc', 'giá so sánh', 'compare at price']);
-      const rawStock = getRowValue(row, ['tồn kho (máy)', 'tồn kho', 'số lượng tồn kho', 'variant inventory qty']);
-      const rawImage = getRowValue(row, ['ảnh màu sắc', 'ảnh biến thể', 'link hình', 'image src']);
-      const rawDescription = getRowValue(row, ['mô tả', 'body (html)', 'description']);
-      const rawVariantSlug = getRowValue(row, ['mã biến thể / slug', 'mã biến thể', 'sku']);
+      const opt1Name = getRowValue(row, ['thuộc tính 1', 'option1 name']).toLowerCase();
+      const opt1Val = getRowValue(row, ['giá trị thuộc tính 1', 'option1 value']);
+      const opt2Name = getRowValue(row, ['thuộc tính 2', 'option2 name']).toLowerCase();
+      const opt2Val = getRowValue(row, ['giá trị thuộc tính 2', 'option2 value']);
 
-      // 1.1 Bóc tách dung lượng nếu cột dung lượng rỗng
-      let storage = rawStorage;
-      if (!storage || storage.toLowerCase() === 'tiêu chuẩn') {
-        const match = rawFullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i) || rawFullName.match(/\b(\d+\s*mm)\b/i);
-        storage = match ? match[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
+      // 1. TÁCH DUNG LƯỢNG CHUẨN TỪ TÊN SẢN PHẨM (Ví dụ: 128GB, 256GB, 512GB, 1TB, 2TB...)
+      const capPattern = /\b(\d+\s*(?:GB|TB)(?:\s*\/\s*\d+\s*(?:GB|TB))?|\d+\s*mm|\d+\s*W)\b/i;
+      const matchCap = rawFullName.match(capPattern);
+      let storage = '';
+
+      if (matchCap) {
+        storage = matchCap[1].replace(/\s+/g, '').toUpperCase();
+      } else {
+        const directStorage = getRowValue(row, ['dung lượng / kích thước', 'dung lượng']);
+        if (/^\d+\s*(?:GB|TB|mm|W)$/i.test(directStorage)) {
+          storage = directStorage.replace(/\s+/g, '').toUpperCase();
+        } else if (/^\d+\s*(?:GB|TB|mm|W)$/i.test(opt1Val)) {
+          storage = opt1Val.replace(/\s+/g, '').toUpperCase();
+        } else if (/^\d+\s*(?:GB|TB|mm|W)$/i.test(opt2Val)) {
+          storage = opt2Val.replace(/\s+/g, '').toUpperCase();
+        } else {
+          storage = 'Tiêu chuẩn';
+        }
       }
       storage = storage.replace(/\//g, '-').trim();
 
-      // 1.2 Làm sạch tên sản phẩm cha (loại bỏ dung lượng lẻ để gộp chung vào 1 model)
-      const cleanProductName = rawFullName
-        .replace(/\b(\d+\s*(?:GB|TB)(\s*\/\s*(?:\d+\s*)?(?:GB|TB))?)\b/gi, '')
-        .replace(/\b(\d+\s*mm)\b/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+      // 2. TÁCH XUẤT XỨ CHUẨN (Việt Nam, Nhập Khẩu, VN/A, LL/A...)
+      let origin = '';
+      if (opt1Name.includes('xuất xứ') || opt1Name.includes('xuat xu')) origin = opt1Val;
+      else if (opt2Name.includes('xuất xứ') || opt2Name.includes('xuat xu')) origin = opt2Val;
+      else if (/việt nam|nhập khẩu|vn\/a|ll\/a|za\/a|chính hãng/i.test(opt1Val)) origin = opt1Val;
+      else if (/việt nam|nhập khẩu|vn\/a|ll\/a|za\/a|chính hãng/i.test(opt2Val)) origin = opt2Val;
+      else origin = 'Việt Nam';
 
-      // 1.3 Tạo slug cha chuẩn
+      // 3. TÁCH MÀU SẮC CHUẨN (Lavender, Sage, Mist Blue, Black, White...)
+      let color = '';
+      if (opt1Name.includes('color') || opt1Name.includes('màu')) color = opt1Val;
+      else if (opt2Name.includes('color') || opt2Name.includes('màu')) color = opt2Val;
+      else {
+        const directColor = getRowValue(row, ['màu sắc', 'màu']);
+        if (directColor && !/việt nam|nhập khẩu/i.test(directColor)) {
+          color = directColor;
+        } else if (opt1Val && opt1Val !== origin && opt1Val !== storage && !/seal|kích hoạt|like new|99%/i.test(opt1Val)) {
+          color = opt1Val;
+        } else if (opt2Val && opt2Val !== origin && opt2Val !== storage && !/seal|kích hoạt|like new|99%/i.test(opt2Val)) {
+          color = opt2Val;
+        }
+      }
+      if (!color) color = 'Tiêu chuẩn';
+
+      // 4. LÀM SẠCH TÊN SẢN PHẨM CHA (Loại bỏ dung lượng để gom nhóm)
+      const cleanProductName = rawFullName
+        .replace(capPattern, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[-\s/]+$/, '');
+
+      const rawModelSlug = getRowValue(row, ['mã model (slug cha)', 'mã model', 'model slug', 'parent slug']);
       let parentSlug = rawModelSlug;
       if (!parentSlug) {
         parentSlug = cleanProductName
@@ -363,17 +396,22 @@ export const importExcel = async (req: any, res: Response) => {
           .replace(/[đĐ]/g, 'd')
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-+|-+$/g, '');
+      } else {
+        parentSlug = parentSlug.replace(/-(256gb|512gb|1tb|2tb|128gb|64gb).*$/i, '').trim();
       }
 
-      // 1.4 Màu sắc
-      const color = rawColor || 'Tiêu chuẩn';
+      const rawPrice = getRowValue(row, ['giá bán (vnđ)', 'giá bán', 'giá', 'variant price']);
+      const rawOriginalPrice = getRowValue(row, ['giá gốc (vnđ)', 'giá gốc', 'giá so sánh', 'compare at price']);
+      const rawStock = getRowValue(row, ['tồn kho (máy)', 'tồn kho', 'số lượng tồn kho', 'variant inventory qty']);
+      const rawImage = getRowValue(row, ['ảnh màu sắc', 'ảnh biến thể', 'link hình', 'image src']);
+      const rawDescription = getRowValue(row, ['mô tả', 'body (html)', 'description']);
+      const rawCategory = getRowValue(row, ['danh mục', 'loại sản phẩm', 'product type', 'category']);
+      const rawVariantId = getRowValue(row, ['mã biến thể', 'variant id', 'id']);
 
-      // 1.5 Giá và tồn kho
       const price = parseNum(rawPrice);
       const originalPrice = parseNum(rawOriginalPrice) || price;
       const stock = price <= 0 ? 0 : (parseNum(rawStock) || 10);
 
-      // 1.6 Xác định danh mục chuẩn
       let finalCategoryName = rawCategory;
       const combined = `${rawCategory} ${cleanProductName}`.toLowerCase();
       const isUsed = combined.includes('cũ') || combined.includes('like new') || combined.includes('99%');
@@ -384,7 +422,6 @@ export const importExcel = async (req: any, res: Response) => {
       else if (combined.includes('watch')) finalCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
       else if (!finalCategoryName) finalCategoryName = 'Phụ kiện';
 
-      // 1.7 Gom vào map theo Model cha
       if (!modelGroupMap.has(parentSlug)) {
         modelGroupMap.set(parentSlug, {
           productName: cleanProductName,
@@ -402,12 +439,15 @@ export const importExcel = async (req: any, res: Response) => {
         .replace(/[đĐ]/g, 'd')
         .replace(/[^a-z0-9]+/g, '-');
       const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const cleanOriginSlug = origin.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-      const variantSlug = rawVariantSlug || `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
+      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${cleanOriginSlug}`.replace(/-+/g, '-');
 
       modelGroupMap.get(parentSlug)!.variants.push({
+        rawVariantId,
         storage,
         color,
+        origin,
         price,
         originalPrice,
         stock,
@@ -416,12 +456,9 @@ export const importExcel = async (req: any, res: Response) => {
       });
     }
 
-    let importedProductCount = 0;
     let importedVariantCount = 0;
 
-    // 2. Lưu từng Model cha và dồn toàn bộ biến thể vào Database
     for (const [parentSlug, item] of modelGroupMap.entries()) {
-      // 2.1 Xử lý danh mục
       let catId = categoryCache[item.categoryName];
       if (!catId) {
         let cat = await prisma.category.findFirst({ where: { name: item.categoryName } });
@@ -433,13 +470,9 @@ export const importExcel = async (req: any, res: Response) => {
         categoryCache[item.categoryName] = catId;
       }
 
-      // 2.2 Tìm hoặc tạo 1 sản phẩm cha duy nhất
       let product = await prisma.product.findFirst({
         where: {
-          OR: [
-            { slug: parentSlug },
-            { name: item.productName },
-          ],
+          OR: [{ slug: parentSlug }, { name: item.productName }],
         },
       });
 
@@ -452,7 +485,6 @@ export const importExcel = async (req: any, res: Response) => {
             description: item.description,
           },
         });
-        importedProductCount++;
       } else if (item.description && (!product.description || product.description.length < 50)) {
         await prisma.product.update({
           where: { id: product.id },
@@ -460,13 +492,13 @@ export const importExcel = async (req: any, res: Response) => {
         });
       }
 
-      // 2.3 Ghi nhận từng biến thể dung lượng & màu sắc
       for (const v of item.variants) {
         const existingVar = await prisma.productVariant.findFirst({
           where: {
             productId: product.id,
             storage: v.storage,
             color: v.color,
+            origin: v.origin,
           },
         });
 
@@ -478,6 +510,7 @@ export const importExcel = async (req: any, res: Response) => {
               price: v.price,
               originalPrice: v.originalPrice,
               stock: v.stock,
+              origin: v.origin,
               ...(v.imageUrl && { images: [v.imageUrl] }),
             },
           });
@@ -487,6 +520,7 @@ export const importExcel = async (req: any, res: Response) => {
               productId: product.id,
               storage: v.storage,
               color: v.color,
+              origin: v.origin,
               slug: v.slug,
               price: v.price,
               originalPrice: v.originalPrice,
@@ -514,6 +548,52 @@ export const importExcel = async (req: any, res: Response) => {
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
     return res.status(500).json({ success: false, error: 'Lỗi xử lý file Excel: ' + err.message });
+  }
+};
+
+// =========================================================================================
+// 8.1 API CHẠY 1 LẦN: TỰ ĐỘNG ĐẢO SỬA LẠI CÁC DÒNG ĐANG BỊ LỆCH TRONG DATABASE HIỆN TẠI
+// =========================================================================================
+export const fixSwappedAttributesInDB = async (req: Request, res: Response) => {
+  try {
+    const variants = await prisma.productVariant.findMany({
+      include: { product: true },
+    });
+
+    let fixedCount = 0;
+
+    for (const v of variants) {
+      const rawStorage = (v.storage || '').trim();
+      const rawColor = (v.color || '').trim();
+
+      const isColorInStorage = /lavender|sage|mist blue|black|white|silver|gold|burgundy|glacier|blue|purple|yellow|red|midnight|starlight|orange|seal|kích hoạt/i.test(rawStorage);
+      const isOriginInColor = /việt nam|nhập khẩu|vn\/a|ll\/a|za\/a/i.test(rawColor);
+
+      if (isColorInStorage || isOriginInColor) {
+        const capMatch = v.product.name.match(/\b(\d+\s*(?:GB|TB))\b/i);
+        const realStorage = capMatch ? capMatch[1].replace(/\s+/g, '').toUpperCase() : '256GB';
+
+        const realColor = isColorInStorage && !/seal|kích hoạt/i.test(rawStorage) ? rawStorage : 'Tiêu chuẩn';
+        const realOrigin = isOriginInColor ? rawColor : 'Việt Nam';
+
+        await prisma.productVariant.update({
+          where: { id: v.id },
+          data: {
+            storage: realStorage,
+            color: realColor,
+            origin: realOrigin,
+          },
+        });
+        fixedCount++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Đã tự động đảo và sửa đúng vị trí Dung lượng, Màu sắc, Xuất xứ cho ${fixedCount} cấu hình trong kho!`,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 

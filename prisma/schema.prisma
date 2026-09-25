@@ -82,20 +82,21 @@ model Product {
 }
 
 model ProductVariant {
-  id            String      @id @default(uuid())
+  id            String      @id @default(cuid())
   productId     String
   product       Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
   storage       String
   color         String
-  colorHex      String?
-  slug          String
-  sku           String?     @unique
-  price         Float
-  originalPrice Float
-  stock         Int         @default(10)
+  origin        String?     @default("Việt Nam")
+  price         Float       @default(0)
+  originalPrice Float       @default(0)
+  stock         Int         @default(0)
+  slug          String      @unique
   images        String[]
   orderItems    OrderItem[]
+
   createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @default(now()) @updatedAt // ✅ Thêm @default(now()) vào đây
 
   @@unique([productId, slug])
 }

@@ -5,6 +5,7 @@ import { verifyAdmin } from '../lib/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { deleteProductsBulk } from '../controllers/productController';
 import { slidingWindowWithFreeze } from '../middlewares/rateLimiter';
+import { fixSwappedAttributesInDB } from '../controllers/adminController';
 
 import {
   getInventory,
@@ -205,5 +206,7 @@ router.delete('/security-logs', verifySecurityScope, async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
+
+router.get('/admin/fix-swapped-attributes', fixSwappedAttributesInDB);
 
 export default router;
