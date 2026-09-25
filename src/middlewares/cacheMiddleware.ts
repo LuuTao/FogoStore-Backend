@@ -7,6 +7,7 @@ import { redis } from '../lib/redis';
  */
 export const checkCache = (ttlSeconds = 600) => {
   return async (req: Request, res: Response, next: NextFunction) => {
+    // Chỉ áp dụng cache cho phương thức GET
     if (req.method !== 'GET') {
       return next();
     }
@@ -14,27 +15,39 @@ export const checkCache = (ttlSeconds = 600) => {
     const cacheKey = `fogo_cache:${req.originalUrl}`;
 
     try {
-      if (redis.status !== 'ready') {
-        return next();
-      }
-
+      // 1. Thử lấy dữ liệu từ Redis
       const cachedData = await redis.get(cacheKey);
+
       if (cachedData) {
-        return res.json(JSON.parse(cachedData));
+        console.log(`⚡ [Cache HIT] Lấy tức thì từ RAM Redis: ${req.originalUrl}`);
+        res.setHeader('X-Cache', 'HIT');
+        const parsed = typeof cachedData === 'string' ? JSON.parse(cachedData) : cachedData;
+        return res.json(parsed);
       }
 
+      console.log(`🐢 [Cache MISS] Đang đọc từ Database Aiven: ${req.originalUrl}`);
+      res.setHeader('X-Cache', 'MISS');
+
+      // 2. Can thiệp res.json để lưu vào Redis khi Database trả kết quả
       const originalSend = res.json.bind(res);
       res.json = (body: any): Response => {
-        if (res.statusCode >= 200 && res.statusCode < 300 && redis.status === 'ready') {
-          redis.set(cacheKey, JSON.stringify(body), 'EX', ttlSeconds).catch((err) => {
-            console.error('Lỗi khi ghi Redis cache:', err.message);
-          });
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          const stringified = typeof body === 'string' ? body : JSON.stringify(body);
+          redis
+            .set(cacheKey, stringified, 'EX', ttlSeconds)
+            .then(() => {
+              console.log(`💾 [Cache SAVED] Đã lưu cache (${ttlSeconds}s): ${cacheKey}`);
+            })
+            .catch((err) => {
+              console.error('❌ Lỗi khi lưu Redis cache:', err.message);
+            });
         }
         return originalSend(body);
       };
 
       next();
-    } catch {
+    } catch (err: any) {
+      console.warn('⚠️ [Redis Bypass] Tạm thời bỏ qua cache do kết nối:', err.message);
       next();
     }
   };
@@ -46,13 +59,12 @@ export const checkCache = (ttlSeconds = 600) => {
  */
 export const clearCachePattern = async (pattern: string) => {
   try {
-    if (redis.status !== 'ready') return;
     const keys = await redis.keys(pattern);
-    if (keys.length > 0) {
+    if (keys && keys.length > 0) {
       await redis.del(...keys);
-      console.log(`🧹 Đã làm mới ${keys.length} khóa cache (${pattern})`);
+      console.log(`🧹 [Cache CLEARED] Đã làm mới ${keys.length} khóa cache (${pattern})`);
     }
   } catch (error: any) {
-    console.error('Lỗi xóa cache:', error.message);
+    console.error('❌ Lỗi xóa cache:', error.message);
   }
 };

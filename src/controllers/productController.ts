@@ -5,11 +5,52 @@ import { clearCachePattern } from '../middlewares/cacheMiddleware';
 // 1. Lấy tất cả sản phẩm
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
-    const products = await prisma.product.findMany({
-      include: { category: true, variants: true },
-      orderBy: { createdAt: 'desc' },
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(50, Number(req.query.limit) || 20); // Mặc định tải 20 sản phẩm/lần
+    const skip = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          isFeatured: true,
+          isFlashSale: true,
+          isHot: true,
+          category: {
+            select: { id: true, name: true, slug: true },
+          },
+          variants: {
+            take: 1, // Ở trang danh sách chỉ cần lấy 1 biến thể đại diện để hiển thị giá & ảnh
+            select: {
+              id: true,
+              price: true,
+              originalPrice: true,
+              stock: true,
+              images: true,
+              color: true,
+              storage: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.product.count(),
+    ]);
+
+    return res.json({
+      success: true,
+      data: products,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     });
-    return res.json({ success: true, data: products });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
