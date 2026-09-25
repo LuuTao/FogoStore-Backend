@@ -253,7 +253,7 @@ export const deleteVariant = async (req: Request, res: Response) => {
 };
 
 // =========================================================================================
-// 8. IMPORT SẢN PHẨM TỰ ĐỘNG - TÁCH CHUẨN DUNG LƯỢNG, MÀU SẮC VÀ XUẤT XỨ
+// 8. IMPORT SẢN PHẨM TỰ ĐỘNG - PHÂN TÍCH CHUẨN XÁC DUNG LƯỢNG, MÀU SẮC, XUẤT XỨ
 // =========================================================================================
 export const importExcel = async (req: any, res: Response) => {
   try {
@@ -334,7 +334,7 @@ export const importExcel = async (req: any, res: Response) => {
       const opt2Name = getRowValue(row, ['thuộc tính 2', 'option2 name']).toLowerCase();
       const opt2Val = getRowValue(row, ['giá trị thuộc tính 2', 'option2 value']);
 
-      // 1. TÁCH DUNG LƯỢNG CHUẨN TỪ TÊN SẢN PHẨM (Ví dụ: 128GB, 256GB, 512GB, 1TB, 2TB...)
+      // 1. TÁCH DUNG LƯỢNG CHUẨN (Ưu tiên từ tên sản phẩm)
       const capPattern = /\b(\d+\s*(?:GB|TB)(?:\s*\/\s*\d+\s*(?:GB|TB))?|\d+\s*mm|\d+\s*W)\b/i;
       const matchCap = rawFullName.match(capPattern);
       let storage = '';
@@ -350,36 +350,41 @@ export const importExcel = async (req: any, res: Response) => {
         } else if (/^\d+\s*(?:GB|TB|mm|W)$/i.test(opt2Val)) {
           storage = opt2Val.replace(/\s+/g, '').toUpperCase();
         } else {
-          storage = 'Tiêu chuẩn';
+          storage = '256GB';
         }
       }
       storage = storage.replace(/\//g, '-').trim();
 
-      // 2. TÁCH XUẤT XỨ CHUẨN (Việt Nam, Nhập Khẩu, VN/A, LL/A...)
-      let origin = '';
-      if (opt1Name.includes('xuất xứ') || opt1Name.includes('xuat xu')) origin = opt1Val;
-      else if (opt2Name.includes('xuất xứ') || opt2Name.includes('xuat xu')) origin = opt2Val;
-      else if (/việt nam|nhập khẩu|vn\/a|ll\/a|za\/a|chính hãng/i.test(opt1Val)) origin = opt1Val;
-      else if (/việt nam|nhập khẩu|vn\/a|ll\/a|za\/a|chính hãng/i.test(opt2Val)) origin = opt2Val;
-      else origin = 'Việt Nam';
+      // 2. PHÂN TÍCH CHUẨN MÀU SẮC VÀ XUẤT XỨ TỪ CỘT THUỘC TÍNH
+      let color = 'Tiêu chuẩn';
+      let origin = 'Việt Nam';
 
-      // 3. TÁCH MÀU SẮC CHUẨN (Lavender, Sage, Mist Blue, Black, White...)
-      let color = '';
-      if (opt1Name.includes('color') || opt1Name.includes('màu')) color = opt1Val;
-      else if (opt2Name.includes('color') || opt2Name.includes('màu')) color = opt2Val;
-      else {
-        const directColor = getRowValue(row, ['màu sắc', 'màu']);
-        if (directColor && !/việt nam|nhập khẩu/i.test(directColor)) {
-          color = directColor;
-        } else if (opt1Val && opt1Val !== origin && opt1Val !== storage && !/seal|kích hoạt|like new|99%/i.test(opt1Val)) {
-          color = opt1Val;
-        } else if (opt2Val && opt2Val !== origin && opt2Val !== storage && !/seal|kích hoạt|like new|99%/i.test(opt2Val)) {
-          color = opt2Val;
+      const classifyAttribute = (val: string) => {
+        if (!val) return;
+        const lower = val.toLowerCase();
+        if (/việt nam|nhập khẩu|vn\/a|ll\/a|za\/a|chính hãng/i.test(lower)) {
+          origin = val;
+        } else if (!/seal|kích hoạt|like new|99%/i.test(lower)) {
+          color = val;
         }
-      }
-      if (!color) color = 'Tiêu chuẩn';
+      };
 
-      // 4. LÀM SẠCH TÊN SẢN PHẨM CHA (Loại bỏ dung lượng để gom nhóm)
+      if (opt1Name.includes('color') || opt1Name.includes('màu')) color = opt1Val || color;
+      if (opt2Name.includes('color') || opt2Name.includes('màu')) color = opt2Val || color;
+
+      if (opt1Name.includes('xuất xứ') || opt1Name.includes('xuat xu')) origin = opt1Val || origin;
+      if (opt2Name.includes('xuất xứ') || opt2Name.includes('xuat xu')) origin = opt2Val || origin;
+
+      if (color === 'Tiêu chuẩn' && opt1Val) classifyAttribute(opt1Val);
+      if (origin === 'Việt Nam' && opt2Val) classifyAttribute(opt2Val);
+
+      if (/việt nam|nhập khẩu|chính hãng/i.test(color)) {
+        const temp = color;
+        color = origin;
+        origin = temp;
+      }
+
+      // 3. LÀM SẠCH TÊN SẢN PHẨM CHA
       const cleanProductName = rawFullName
         .replace(capPattern, '')
         .replace(/\s+/g, ' ')
@@ -441,7 +446,8 @@ export const importExcel = async (req: any, res: Response) => {
       const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       const cleanOriginSlug = origin.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${cleanOriginSlug}`.replace(/-+/g, '-');
+      const randomSuffix = rawVariantId || Math.floor(Math.random() * 100000);
+      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${cleanOriginSlug}-${randomSuffix}`.replace(/-+/g, '-');
 
       modelGroupMap.get(parentSlug)!.variants.push({
         rawVariantId,
@@ -493,43 +499,30 @@ export const importExcel = async (req: any, res: Response) => {
       }
 
       for (const v of item.variants) {
-        const existingVar = await prisma.productVariant.findFirst({
-          where: {
+        await prisma.productVariant.upsert({
+          where: { slug: v.slug },
+          update: {
+            price: v.price,
+            originalPrice: v.originalPrice,
+            stock: v.stock,
+            origin: v.origin,
+            storage: v.storage,
+            color: v.color,
+            ...(v.imageUrl && { images: [v.imageUrl] }),
+          },
+          create: {
             productId: product.id,
             storage: v.storage,
             color: v.color,
             origin: v.origin,
+            slug: v.slug,
+            price: v.price,
+            originalPrice: v.originalPrice,
+            stock: v.stock,
+            images: v.imageUrl ? [v.imageUrl] : [],
           },
         });
-
-        if (existingVar) {
-          await prisma.productVariant.update({
-            where: { id: existingVar.id },
-            data: {
-              slug: v.slug,
-              price: v.price,
-              originalPrice: v.originalPrice,
-              stock: v.stock,
-              origin: v.origin,
-              ...(v.imageUrl && { images: [v.imageUrl] }),
-            },
-          });
-        } else {
-          await prisma.productVariant.create({
-            data: {
-              productId: product.id,
-              storage: v.storage,
-              color: v.color,
-              origin: v.origin,
-              slug: v.slug,
-              price: v.price,
-              originalPrice: v.originalPrice,
-              stock: v.stock,
-              images: v.imageUrl ? [v.imageUrl] : [],
-            },
-          });
-          importedVariantCount++;
-        }
+        importedVariantCount++;
       }
     }
 
