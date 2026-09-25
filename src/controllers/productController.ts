@@ -116,12 +116,17 @@ export const filterProducts = async (req: Request, res: Response) => {
 
     const whereClause: any = {
       name: { not: '' },
-      variants: { some: {} },
     };
 
     if (category) {
-      whereClause.category = { slug: String(category).toLowerCase() };
+      const catStr = String(category).toLowerCase().trim();
+      whereClause.OR = [
+        { category: { slug: { contains: catStr, mode: 'insensitive' } } },
+        { category: { name: { contains: catStr, mode: 'insensitive' } } },
+        { name: { contains: catStr, mode: 'insensitive' } }, // Fallback nếu sản phẩm gắn danh mục khác
+      ];
     }
+
     if (isFeatured === 'true') whereClause.isFeatured = true;
     if (isFlashSale === 'true') whereClause.isFlashSale = true;
     if (isHot === 'true') whereClause.isHot = true;
@@ -130,14 +135,16 @@ export const filterProducts = async (req: Request, res: Response) => {
       where: whereClause,
       include: {
         category: true,
-        variants: true,
+        variants: {
+          orderBy: { price: 'asc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
 
     const cleaned = products.map((p) => ({
       ...p,
-      variants: p.variants.map((v) => {
+      variants: (p.variants || []).map((v) => {
         let imgs: any = v.images;
         if (typeof imgs === 'string') {
           try {
@@ -155,7 +162,6 @@ export const filterProducts = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
-
 // ============================================================================
 // 3. CHI TIẾT SẢN PHẨM THEO SLUG (TỰ ĐỘNG BÓC TÁCH CHUẨN XÁC BIẾN THỂ TỪ URL)
 // ============================================================================
