@@ -6,6 +6,7 @@ import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { prisma } from './lib/prisma';
+import { redis } from './lib/redis';
 
 // Import Routes
 import authRoutes from './routes/authRoutes';
@@ -27,17 +28,14 @@ const uploadDir = path.join(__dirname, '../uploads');
 // ============================================================================
 // 1. CẤU HÌNH BẢO MẬT & NÉN TỐC ĐỘ (LUÔN ĐẶT ĐẦU TIÊN)
 // ============================================================================
-// Chống rò rỉ header, clickjacking, cho phép tải ảnh từ uploads
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
 
-// Nén dữ liệu Gzip / Brotli
 app.use(compression());
 
-// Cấu hình CORS
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     callback(null, true);
@@ -53,43 +51,85 @@ const corsOptions: cors.CorsOptions = {
     'Cache-Control',
     'Pragma',
     'Expires',
-    'x-security-token', // Bổ sung header cho bảo mật lớp 2
+    'x-security-token',
   ],
 };
 app.use(cors(corsOptions));
 
-// Bộ giải mã dữ liệu Request Body
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Static file
 app.use('/uploads', express.static(uploadDir));
 app.use(express.static(path.join(__dirname, '../public')));
 
 // ============================================================================
-// 2. HEALTHCHECK (ĐẶT TRƯỚC RATE LIMIT ĐỂ CRON-JOB PING THOẢI MÁI KHÔNG BỊ CHẶN)
+// 2. HEALTHCHECK TOÀN DIỆN (KIỂM TRA SERVER, POSTGRESQL VÀ UPSTASH REDIS)
 // ============================================================================
 app.get('/', (req, res) => res.send('<h1>Fogo Store API Server is running!</h1>'));
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: new Date().toISOString() });
-});
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: new Date().toISOString() });
+
+app.get(['/health', '/api/health'], async (req, res) => {
+  const timestamp = new Date().toISOString();
+  
+  // 1. Kiểm tra trạng thái và đo độ trễ Upstash Redis
+  let redisStatus = 'UNKNOWN';
+  let redisLatency = 0;
+  const startRedis = Date.now();
+
+  try {
+    const pingRes = await redis.ping();
+    redisLatency = Date.now() - startRedis;
+    redisStatus = pingRes === 'PONG' ? 'CONNECTED' : `UNEXPECTED_RESPONSE (${pingRes})`;
+  } catch (err: any) {
+    redisStatus = `ERROR: ${err.message || 'Disconnected'}`;
+  }
+
+  // 2. Kiểm tra trạng thái và đo độ trễ PostgreSQL (Aiven)
+  let dbStatus = 'UNKNOWN';
+  let dbLatency = 0;
+  const startDb = Date.now();
+
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbLatency = Date.now() - startDb;
+    dbStatus = 'CONNECTED';
+  } catch (err: any) {
+    dbStatus = `ERROR: ${err.message || 'Disconnected'}`;
+  }
+
+  const isHealthy = redisStatus === 'CONNECTED' && dbStatus === 'CONNECTED';
+
+  return res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'HEALTHY' : 'DEGRADED',
+    timestamp,
+    uptimeSeconds: Math.floor(process.uptime()),
+    services: {
+      server: {
+        status: 'ONLINE',
+      },
+      upstashRedis: {
+        status: redisStatus,
+        latencyMs: `${redisLatency}ms`,
+      },
+      postgresDatabase: {
+        status: dbStatus,
+        latencyMs: `${dbLatency}ms`,
+      },
+    },
+  });
 });
 
 // ============================================================================
 // 3. TẦNG BẢO VỆ TẦN SUẤT TOÀN CỤC (GLOBAL RATE LIMITER)
 // ============================================================================
 const globalLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 phút
-  max: 200, // Cho phép tối đa 200 request / phút / IP cho khách lướt web
+  windowMs: 1 * 60 * 1000,
+  max: 200,
   message: { success: false, message: 'Quá nhiều yêu cầu từ IP của bạn, vui lòng đợi 1 phút.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use('/api/', globalLimiter);
 
-// Giới hạn chống dò mật khẩu cổng đăng nhập cơ bản
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -101,7 +141,6 @@ app.use('/api/auth/', authLimiter);
 // 4. THEO DÕI LƯỢT TRUY CẬP (PAGE VIEW TRACKING)
 // ============================================================================
 app.use(async (req, res, next) => {
-  // Chỉ đếm lượt GET xem trang của người dùng thực, bỏ qua ảnh, file tĩnh và ping healthcheck
   if (
     req.method === 'GET' &&
     !req.path.startsWith('/uploads') &&
@@ -122,7 +161,7 @@ app.use(async (req, res, next) => {
           path: req.path,
         },
       })
-      .catch(() => {}); // Chạy nền ngầm để không làm chậm luồng API chính
+      .catch(() => {});
   }
   next();
 });
@@ -140,7 +179,9 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', contentRoutes);
 
-// Khởi động lắng nghe cổng mạng
+// ============================================================================
+// 6. KHỞI ĐỘNG SERVER
+// ============================================================================
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`🚀 FoGo Store Server đang hoạt động tại cổng ${PORT} (0.0.0.0)`);
 });
