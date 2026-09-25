@@ -2,15 +2,39 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
-// 1. Lấy tất cả sản phẩm
+// ============================================================================
+// 1. LẤY TẤT CẢ SẢN PHẨM (CHẤP NHẬN GIÁ 0Đ - CHỈ BỎ SẢN PHẨM KHÔNG CÓ TRONG DB)
+// ============================================================================
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
-    const limit = Math.min(50, Number(req.query.limit) || 20); // Mặc định tải 20 sản phẩm/lần
+    const limit = Math.min(100, Number(req.query.limit) || 20);
     const skip = (page - 1) * limit;
+    const search = req.query.search ? String(req.query.search).trim() : '';
+
+    // Điều kiện: Sản phẩm có tên thật và có ít nhất 1 biến thể được lưu trong DB
+    const whereClause: any = {
+      name: { not: '' },
+      variants: {
+        some: {}, // Chỉ cần có bản ghi variant trong DB
+      },
+    };
+
+    if (search) {
+      whereClause.AND = [
+        {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { slug: { contains: search, mode: 'insensitive' } },
+            { category: { name: { contains: search, mode: 'insensitive' } } },
+          ],
+        },
+      ];
+    }
 
     const [products, total] = await Promise.all([
       prisma.product.findMany({
+        where: whereClause,
         skip,
         take: limit,
         select: {
@@ -24,7 +48,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
             select: { id: true, name: true, slug: true },
           },
           variants: {
-            take: 1, // Ở trang danh sách chỉ cần lấy 1 biến thể đại diện để hiển thị giá & ảnh
+            take: 1, // Lấy biến thể đầu tiên để lấy giá & hình ảnh
             select: {
               id: true,
               price: true,
@@ -38,12 +62,30 @@ export const getAllProducts = async (req: Request, res: Response) => {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.product.count(),
+      prisma.product.count({ where: whereClause }),
     ]);
+
+    const cleanedProducts = products.map((prod) => ({
+      ...prod,
+      variants: prod.variants.map((v) => {
+        let imgs: any = v.images;
+        if (typeof imgs === 'string') {
+          try {
+            imgs = JSON.parse(imgs);
+          } catch {
+            imgs = [imgs];
+          }
+        }
+        return {
+          ...v,
+          images: Array.isArray(imgs) ? imgs : [],
+        };
+      }),
+    }));
 
     return res.json({
       success: true,
-      data: products,
+      data: cleanedProducts,
       pagination: {
         page,
         limit,
@@ -56,11 +98,17 @@ export const getAllProducts = async (req: Request, res: Response) => {
   }
 };
 
-// 2. Bộ lọc sản phẩm (danh mục, hot, sale, featured)
+// ============================================================================
+// 2. BỘ LỌC SẢN PHẨM
+// ============================================================================
 export const filterProducts = async (req: Request, res: Response) => {
   try {
     const { category, isFeatured, isFlashSale, isHot } = req.query;
-    const whereClause: any = {};
+
+    const whereClause: any = {
+      name: { not: '' },
+      variants: { some: {} },
+    };
 
     if (category) {
       whereClause.category = { slug: String(category).toLowerCase() };
@@ -71,16 +119,37 @@ export const filterProducts = async (req: Request, res: Response) => {
 
     const products = await prisma.product.findMany({
       where: whereClause,
-      include: { category: true, variants: true },
+      include: {
+        category: true,
+        variants: true,
+      },
       orderBy: { createdAt: 'desc' },
     });
-    return res.json({ success: true, data: products });
+
+    const cleaned = products.map((p) => ({
+      ...p,
+      variants: p.variants.map((v) => {
+        let imgs: any = v.images;
+        if (typeof imgs === 'string') {
+          try {
+            imgs = JSON.parse(imgs);
+          } catch {
+            imgs = [imgs];
+          }
+        }
+        return { ...v, images: Array.isArray(imgs) ? imgs : [] };
+      }),
+    }));
+
+    return res.json({ success: true, data: cleaned });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// 3. Chi tiết sản phẩm theo slug hoặc ID
+// ============================================================================
+// 3. CHI TIẾT SẢN PHẨM THEO SLUG HOẶC ID
+// ============================================================================
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
     const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim();
@@ -159,7 +228,9 @@ export const getProductBySlug = async (req: Request, res: Response) => {
   }
 };
 
-// 4. Lấy danh sách danh mục
+// ============================================================================
+// 4. LẤY DANH SÁCH DANH MỤC
+// ============================================================================
 export const getCategories = async (req: Request, res: Response) => {
   try {
     const categories = await prisma.category.findMany({
@@ -176,7 +247,9 @@ export const getCategories = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Xóa hàng loạt sản phẩm (tự động xóa cache)
+// ============================================================================
+// 5. XÓA HÀNG LOẠT SẢN PHẨM & TỰ ĐỘNG XÓA CACHE
+// ============================================================================
 export const deleteProductsBulk = async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;
@@ -192,7 +265,6 @@ export const deleteProductsBulk = async (req: Request, res: Response) => {
       where: { id: { in: ids } },
     });
 
-    // Làm mới cache sản phẩm
     await clearCachePattern('fogo_cache:*');
 
     return res.json({ success: true, message: `Đã xóa thành công ${ids.length} sản phẩm!` });
