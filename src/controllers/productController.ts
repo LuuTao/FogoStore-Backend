@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ============================================================================
-// 1. LẤY TẤT CẢ SẢN PHẨM (HỖ TRỢ NẠP TOÀN BỘ CACHE VÀ TÌM KIẾM THEO TỪ KHÓA)
+// 1. LẤY TẤT CẢ SẢN PHẨM & TOÀN BỘ CÁC BIẾN THỂ (VARIANTS) CÓ TRONG DB
 // ============================================================================
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
@@ -11,7 +11,6 @@ export const getAllProducts = async (req: Request, res: Response) => {
     const isGetAll = req.query.all === 'true' || req.query.limit === 'all';
 
     const page = Math.max(1, Number(req.query.page) || 1);
-    // Khi gọi nạp cache tìm kiếm (all=true) cho phép lấy tối đa 500 sản phẩm
     const limit = isGetAll ? 500 : Math.min(100, Number(req.query.limit) || 20);
     const skip = isGetAll ? 0 : (page - 1) * limit;
 
@@ -24,6 +23,17 @@ export const getAllProducts = async (req: Request, res: Response) => {
         { name: { contains: search, mode: 'insensitive' } },
         { slug: { contains: search, mode: 'insensitive' } },
         { category: { name: { contains: search, mode: 'insensitive' } } },
+        {
+          variants: {
+            some: {
+              OR: [
+                { storage: { contains: search, mode: 'insensitive' } },
+                { color: { contains: search, mode: 'insensitive' } },
+                { slug: { contains: search, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
       ];
     }
 
@@ -39,11 +49,12 @@ export const getAllProducts = async (req: Request, res: Response) => {
           isFeatured: true,
           isFlashSale: true,
           isHot: true,
+          createdAt: true,
           category: {
             select: { id: true, name: true, slug: true },
           },
+          // LẤY HẾT TẤT CẢ CÁC BIẾN THỂ (KHÔNG GIỚI HẠN take: 1)
           variants: {
-            take: 1, // Lấy biến thể đầu tiên để lấy giá & hình ảnh đại diện
             select: {
               id: true,
               price: true,
@@ -52,7 +63,9 @@ export const getAllProducts = async (req: Request, res: Response) => {
               images: true,
               color: true,
               storage: true,
+              slug: true,
             },
+            orderBy: { price: 'asc' },
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -62,7 +75,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
 
     const cleanedProducts = products.map((prod) => ({
       ...prod,
-      variants: prod.variants.map((v) => {
+      variants: (prod.variants || []).map((v) => {
         let imgs: any = v.images;
         if (typeof imgs === 'string') {
           try {
@@ -95,7 +108,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 2. BỘ LỌC SẢN PHẨM (DANH MỤC, HOT, SALE, FEATURED)
+// 2. BỘ LỌC SẢN PHẨM
 // ============================================================================
 export const filterProducts = async (req: Request, res: Response) => {
   try {
@@ -144,7 +157,7 @@ export const filterProducts = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 3. CHI TIẾT SẢN PHẨM THEO SLUG HOẶC ID
+// 3. CHI TIẾT SẢN PHẨM
 // ============================================================================
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
@@ -219,7 +232,6 @@ export const getProductBySlug = async (req: Request, res: Response) => {
 
     return res.json({ success: true, data: { ...product, variants: parsedVariants } });
   } catch (err: any) {
-    console.error('Lỗi lấy chi tiết sản phẩm:', err);
     return res.status(500).json({ success: false, error: 'Lỗi server' });
   }
 };
