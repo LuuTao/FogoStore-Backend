@@ -246,7 +246,7 @@ export const deleteVariant = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 8. IMPORT SẢN PHẨM TỰ ĐỘNG BẰNG EXCELJS (CHUẨN FILE MỚI)
+// 8. IMPORT SẢN PHẨM TỰ ĐỘNG BẰNG EXCELJS (CHUẨN FILE MỚI, KHÔNG LỖI SLUG)
 // ==========================================
 export const importExcel = async (req: any, res: Response) => {
   try {
@@ -380,7 +380,6 @@ export const importExcel = async (req: any, res: Response) => {
             slug: `${parentSlug}-${productIdHaravan.toString().slice(-4)}`,
             categoryId: categoryId,
             description: descriptionContent,
-            brand: getVal('Hãng') || 'Apple',
           },
         });
         importedCount++;
@@ -418,7 +417,7 @@ export const importExcel = async (req: any, res: Response) => {
       const rawImg = getVal('Ảnh biến thể') || getVal('Link hình') || '';
       const imageUrl = rawImg.startsWith('http') ? rawImg : '';
 
-      // 7. Lưu hoặc cập nhật Biến thể (ProductVariant)
+      // 7. Lưu hoặc cập nhật Biến thể (ProductVariant) - Slug luôn độc nhất kèm ID biến thể
       const cleanColorSlug = color
         .toLowerCase()
         .normalize('NFD')
@@ -426,13 +425,14 @@ export const importExcel = async (req: any, res: Response) => {
         .replace(/[đĐ]/g, 'd')
         .replace(/[^a-z0-9]+/g, '-');
       const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
+      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${variantIdHaravan}`;
 
       await prisma.productVariant.upsert({
         where: { id: String(variantIdHaravan) },
         update: {
           storage,
           color,
+          slug: variantSlug,
           price: price > 0 ? price : undefined,
           originalPrice: originalPrice > 0 ? originalPrice : undefined,
           stock: price <= 0 ? 0 : stock,
