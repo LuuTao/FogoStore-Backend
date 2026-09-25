@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ============================================================================
-// 1. LẤY TẤT CẢ SẢN PHẨM & TOÀN BỘ CÁC BIẾN THỂ (VARIANTS) CÓ TRONG DB
+// 1. LẤY TẤT CẢ SẢN PHẨM & TOÀN BỘ CÁC BIẾN THỂ TRONG DB (CHẤP NHẬN CẢ GIÁ 0Đ)
 // ============================================================================
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
@@ -53,7 +53,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
           category: {
             select: { id: true, name: true, slug: true },
           },
-          // LẤY HẾT TẤT CẢ CÁC BIẾN THỂ (KHÔNG GIỚI HẠN take: 1)
+          // Lấy trọn vẹn TẤT CẢ các biến thể trong DB, không giới hạn
           variants: {
             select: {
               id: true,
@@ -157,19 +157,15 @@ export const filterProducts = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 3. CHI TIẾT SẢN PHẨM
+// 3. CHI TIẾT SẢN PHẨM THEO SLUG (TỰ ĐỘNG BÓC TÁCH CHUẨN XÁC BIẾN THỂ TỪ URL)
 // ============================================================================
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
-    const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim();
+    const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim().toLowerCase();
     const proid = req.query.proid ? String(req.query.proid).trim() : '';
 
-    const cleanBaseSlug = rawSlug.replace(
-      /(-(8gb|16gb|24gb|32gb|64gb|128gb|256gb|512gb|1tb|2tb|40mm|41mm|42mm|44mm|45mm|46mm|49mm))+$/gi,
-      ''
-    );
-
-    let product = null;
+    let product: any = null;
+    let targetVariantId: string | null = null;
 
     if (proid) {
       product = await prisma.product.findUnique({
@@ -179,25 +175,12 @@ export const getProductBySlug = async (req: Request, res: Response) => {
     }
 
     if (!product) {
-      product = await prisma.product.findFirst({
+      const matchedVariant = await prisma.productVariant.findFirst({
         where: {
           OR: [
-            { slug: cleanBaseSlug },
             { slug: rawSlug },
-            { slug: { startsWith: cleanBaseSlug } },
-          ],
-        },
-        include: { category: true, variants: true },
-      });
-    }
-
-    if (!product) {
-      const variant = await prisma.productVariant.findFirst({
-        where: {
-          OR: [
-            { slug: cleanBaseSlug },
-            { slug: rawSlug },
-            { slug: { contains: cleanBaseSlug } },
+            { slug: { startsWith: rawSlug } },
+            { slug: { contains: rawSlug } },
           ],
         },
         include: {
@@ -206,8 +189,42 @@ export const getProductBySlug = async (req: Request, res: Response) => {
           },
         },
       });
-      if (variant) {
-        product = variant.product;
+
+      if (matchedVariant) {
+        product = matchedVariant.product;
+        targetVariantId = matchedVariant.id;
+      }
+    }
+
+    if (!product) {
+      let cleanSlug = rawSlug.replace(/-\d{6,}$/gi, '');
+
+      product = await prisma.product.findFirst({
+        where: {
+          OR: [
+            { slug: rawSlug },
+            { slug: cleanSlug },
+          ],
+        },
+        include: { category: true, variants: true },
+      });
+
+      if (!product) {
+        const baseProductSlug = cleanSlug
+          .replace(/-(2tb|1tb|512gb|256gb|128gb|64gb|32gb|16gb|8gb)/gi, '')
+          .replace(/-(black|white|silver|gold|gray|grey|titanium|blue|pink|green|yellow|orange|purple|starlight|midnight)/gi, '')
+          .replace(/-(40mm|41mm|42mm|44mm|45mm|46mm|49mm)/gi, '')
+          .replace(/-+$/gi, '');
+
+        product = await prisma.product.findFirst({
+          where: {
+            OR: [
+              { slug: baseProductSlug },
+              { slug: { startsWith: baseProductSlug } },
+            ],
+          },
+          include: { category: true, variants: true },
+        });
       }
     }
 
@@ -215,7 +232,7 @@ export const getProductBySlug = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Không tìm thấy sản phẩm' });
     }
 
-    const parsedVariants = product.variants.map((v) => {
+    const parsedVariants = product.variants.map((v: any) => {
       let imgs: any = v.images;
       if (typeof imgs === 'string') {
         try {
@@ -230,8 +247,32 @@ export const getProductBySlug = async (req: Request, res: Response) => {
       };
     });
 
-    return res.json({ success: true, data: { ...product, variants: parsedVariants } });
+    let matchedVariant = null;
+    if (targetVariantId) {
+      matchedVariant = parsedVariants.find((v: any) => v.id === targetVariantId);
+    }
+
+    if (!matchedVariant) {
+      matchedVariant = parsedVariants.find((v: any) => {
+        const storageMatch = v.storage && rawSlug.includes(String(v.storage).toLowerCase());
+        const colorMatch = v.color && rawSlug.includes(String(v.color).toLowerCase());
+        return storageMatch && colorMatch;
+      }) || parsedVariants.find((v: any) => {
+        return v.storage && rawSlug.includes(String(v.storage).toLowerCase());
+      }) || parsedVariants[0];
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...product,
+        variants: parsedVariants,
+        matchedVariantId: matchedVariant?.id || null,
+        initialVariant: matchedVariant || null,
+      },
+    });
   } catch (err: any) {
+    console.error('Lỗi getProductBySlug:', err);
     return res.status(500).json({ success: false, error: 'Lỗi server' });
   }
 };
