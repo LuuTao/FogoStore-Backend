@@ -15,7 +15,7 @@ async function main() {
     update: {
       password: hashedPassword,
       role: 'ADMIN',
-      fullName: 'FoGo Super Admin',
+      fullName: 'Fogo Admin',
     },
     create: {
       email: adminEmail,

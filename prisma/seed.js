@@ -21,7 +21,7 @@ async function main() {
         create: {
             email: adminEmail,
             password: hashedPassword,
-            fullName: 'FoGo Super Admin',
+            fullName: 'Fogo Admin',
             phone: '0566003333',
             role: 'ADMIN',
         },
