@@ -13,7 +13,6 @@ const GOOGLE_CLIENT_ID =
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// Cấu hình dịch vụ gửi thư Gmail (miễn phí qua App Password)
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -22,9 +21,41 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Bộ nhớ đệm tạm lưu OTP theo Email (thời hạn 5 phút)
 const emailOtpStore = new Map<string, { otp: string; userData: any; expiresAt: number }>();
 const zaloOtpStore = new Map<string, { otp: string; userData: any; expiresAt: number }>();
+
+/**
+ * Tính toán Rank thành viên dựa trên tổng số món đã mua thành công
+ * >= 4 món: VIP
+ * >= 1 món: LOYAL (Thân Thiết)
+ * 0 món: MEMBER (Thành Viên tiêu chuẩn)
+ */
+const calculateUserRank = async (userId: string) => {
+  const completedOrders = await prisma.order.findMany({
+    where: {
+      userId,
+      orderStatus: {
+        in: ['DELIVERED', 'COMPLETED', 'CONFIRMED'],
+      },
+    },
+    include: {
+      items: true,
+    },
+  });
+
+  const totalItemsPurchased = completedOrders.reduce((acc, order) => {
+    return acc + (order.items?.reduce((sum, item) => sum + (item.quantity || 1), 0) || 0);
+  }, 0);
+
+  let rank: 'VIP' | 'LOYAL' | 'MEMBER' = 'MEMBER';
+  if (totalItemsPurchased >= 4) {
+    rank = 'VIP';
+  } else if (totalItemsPurchased >= 1) {
+    rank = 'LOYAL';
+  }
+
+  return { totalItemsPurchased, rank };
+};
 
 // ==========================================
 // 1. GỬI MÃ OTP VỀ HÒM THƯ GMAIL (MIỄN PHÍ)
@@ -135,7 +166,17 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
       { expiresIn: '7d' }
     );
 
-    return res.status(201).json({ success: true, data: { token, user } });
+    return res.status(201).json({
+      success: true,
+      data: {
+        token,
+        user: {
+          ...user,
+          rank: 'MEMBER',
+          totalItemsPurchased: 0,
+        },
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -152,7 +193,6 @@ export const googleAuth = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Thiếu Google credential token' });
     }
 
-    // Xác thực token chính chủ từ máy chủ Google
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: GOOGLE_CLIENT_ID,
@@ -166,7 +206,6 @@ export const googleAuth = async (req: Request, res: Response) => {
     const cleanEmail = payload.email.trim().toLowerCase();
     const fullName = payload.name || cleanEmail.split('@')[0];
 
-    // Tìm xem tài khoản đã tồn tại trong DB chưa
     let user = await prisma.user.findFirst({
       where: { email: cleanEmail },
     });
@@ -186,7 +225,8 @@ export const googleAuth = async (req: Request, res: Response) => {
       });
     }
 
-    // Ký JWT Token phiên đăng nhập cho user
+    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+
     const appToken = jwt.sign(
       { id: user.id, email: user.email, phone: user.phone, role: user.role },
       JWT_SECRET,
@@ -197,7 +237,11 @@ export const googleAuth = async (req: Request, res: Response) => {
       success: true,
       data: {
         token: appToken,
-        user,
+        user: {
+          ...user,
+          totalItemsPurchased,
+          rank,
+        },
       },
     });
   } catch (error: any) {
@@ -207,7 +251,7 @@ export const googleAuth = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 4. CÁC HÀM CŨ (ZALO, LOGIN)
+// 4. ZALO OTP & ĐĂNG NHẬP THƯỜNG
 // ==========================================
 export const sendZaloOtp = async (req: Request, res: Response) => {
   try {
@@ -250,7 +294,17 @@ export const verifyZaloOtp = async (req: Request, res: Response) => {
 
     zaloOtpStore.delete(phoneClean);
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    return res.status(201).json({ success: true, data: { token, user } });
+    return res.status(201).json({
+      success: true,
+      data: {
+        token,
+        user: {
+          ...user,
+          rank: 'MEMBER',
+          totalItemsPurchased: 0,
+        },
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -268,8 +322,61 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Tài khoản hoặc mật khẩu không chính xác' });
     }
 
+    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+
     const token = jwt.sign({ id: user.id, phone: user.phone, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    return res.json({ success: true, data: { token, user } });
+    return res.json({
+      success: true,
+      data: {
+        token,
+        user: {
+          ...user,
+          totalItemsPurchased,
+          rank,
+        },
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==========================================
+// 5. LẤY THÔNG TIN HỒ SƠ & HẠNG THÀNH VIÊN
+// ==========================================
+export const getMe = async (req: any, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Chưa đăng nhập' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy thông tin người dùng' });
+    }
+
+    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+
+    return res.json({
+      success: true,
+      data: {
+        ...user,
+        totalItemsPurchased,
+        rank,
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
