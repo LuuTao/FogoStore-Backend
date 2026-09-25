@@ -3,32 +3,27 @@ import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ============================================================================
-// 1. LẤY TẤT CẢ SẢN PHẨM (CHẤP NHẬN GIÁ 0Đ - CHỈ BỎ SẢN PHẨM KHÔNG CÓ TRONG DB)
+// 1. LẤY TẤT CẢ SẢN PHẨM (HỖ TRỢ NẠP TOÀN BỘ CACHE VÀ TÌM KIẾM THEO TỪ KHÓA)
 // ============================================================================
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
-    const page = Math.max(1, Number(req.query.page) || 1);
-    const limit = Math.min(100, Number(req.query.limit) || 20);
-    const skip = (page - 1) * limit;
     const search = req.query.search ? String(req.query.search).trim() : '';
+    const isGetAll = req.query.all === 'true' || req.query.limit === 'all';
 
-    // Điều kiện: Sản phẩm có tên thật và có ít nhất 1 biến thể được lưu trong DB
+    const page = Math.max(1, Number(req.query.page) || 1);
+    // Khi gọi nạp cache tìm kiếm (all=true) cho phép lấy tối đa 500 sản phẩm
+    const limit = isGetAll ? 500 : Math.min(100, Number(req.query.limit) || 20);
+    const skip = isGetAll ? 0 : (page - 1) * limit;
+
     const whereClause: any = {
       name: { not: '' },
-      variants: {
-        some: {}, // Chỉ cần có bản ghi variant trong DB
-      },
     };
 
     if (search) {
-      whereClause.AND = [
-        {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { slug: { contains: search, mode: 'insensitive' } },
-            { category: { name: { contains: search, mode: 'insensitive' } } },
-          ],
-        },
+      whereClause.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { slug: { contains: search, mode: 'insensitive' } },
+        { category: { name: { contains: search, mode: 'insensitive' } } },
       ];
     }
 
@@ -48,7 +43,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
             select: { id: true, name: true, slug: true },
           },
           variants: {
-            take: 1, // Lấy biến thể đầu tiên để lấy giá & hình ảnh
+            take: 1, // Lấy biến thể đầu tiên để lấy giá & hình ảnh đại diện
             select: {
               id: true,
               price: true,
@@ -94,12 +89,13 @@ export const getAllProducts = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    console.error('Lỗi getAllProducts:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
 // ============================================================================
-// 2. BỘ LỌC SẢN PHẨM
+// 2. BỘ LỌC SẢN PHẨM (DANH MỤC, HOT, SALE, FEATURED)
 // ============================================================================
 export const filterProducts = async (req: Request, res: Response) => {
   try {
