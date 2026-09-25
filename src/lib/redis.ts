@@ -1,25 +1,50 @@
 import Redis from 'ioredis';
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const redisUrl = process.env.REDIS_URL;
 
-export const redis = new Redis(redisUrl, {
-  maxRetriesPerRequest: 2,
+if (!redisUrl) {
+  console.warn('⚠️ [Redis] Chưa tìm thấy biến môi trường REDIS_URL trong Environment!');
+}
+
+const isSecure = redisUrl ? (redisUrl.startsWith('rediss://') || redisUrl.includes('upstash.io')) : false;
+
+export const redis = new Redis(redisUrl || 'redis://localhost:6379', {
+  maxRetriesPerRequest: 3,
   lazyConnect: true,
+  // Cấu hình TLS bắt buộc cho Upstash Redis
+  tls: isSecure
+    ? {
+        rejectUnauthorized: false,
+      }
+    : undefined,
+  keepAlive: 10000, // Gửi ping socket mỗi 10 giây để Upstash không ngắt kết nối
+  connectTimeout: 10000,
   retryStrategy(times) {
-    if (times > 3) {
-      console.warn('⚠️ [Redis] Không thể kết nối, tạm thời tắt tính năng cache.');
+    if (times > 5) {
+      console.warn('⚠️ [Redis] Đã thử kết nối 5 lần thất bại. Tạm thời vô hiệu hóa Redis cache.');
       return null;
     }
-    return 2000;
+    return Math.min(times * 1000, 3000);
   },
 });
 
 redis.on('connect', () => {
-  console.log('✅ [Redis] Đã kết nối thành công tới Redis Caching Server!');
+  console.log('✅ [Redis] Đã kết nối thành công tới Upstash Redis qua giao thức TCP/TLS!');
+});
+
+redis.on('ready', () => {
+  console.log('🚀 [Redis] Caching Server sẵn sàng nhận lệnh truy vấn.');
 });
 
 redis.on('error', (err) => {
   console.error('❌ [Redis Error]:', err.message);
 });
 
-redis.connect().catch(() => {});
+redis.on('close', () => {
+  console.warn('⚠️ [Redis] Đã ngắt kết nối socket với Upstash.');
+});
+
+// Kích hoạt kết nối ngầm khi khởi động server
+redis.connect().catch((err) => {
+  console.error('❌ [Redis Connect Failed]:', err.message);
+});
