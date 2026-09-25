@@ -100,6 +100,7 @@ export const deleteProduct = async (req: Request, res: Response) => {
   }
 };
 
+
 // 4. Thêm biến thể cho sản phẩm sẵn có
 export const addVariant = async (req: Request, res: Response) => {
   try {

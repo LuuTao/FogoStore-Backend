@@ -34,7 +34,29 @@ export const filterProducts = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+// Xóa hàng loạt sản phẩm
+export const deleteProductsBulk = async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Danh sách ID không hợp lệ' });
+    }
 
+    // Xóa toàn bộ biến thể trước
+    await prisma.productVariant.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    // Xóa các sản phẩm
+    await prisma.product.deleteMany({
+      where: { id: { in: ids } },
+    });
+
+    return res.json({ success: true, message: `Đã xóa thành công ${ids.length} sản phẩm!` });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Lỗi khi xóa sản phẩm' });
+  }
+};
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
     const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim();

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
 import { verifyAdmin } from '../lib/authMiddleware';
 import { prisma } from '../lib/prisma';
+import { deleteProductsBulk } from '../controllers/productController';
 import {
   getInventory,
   createFullProduct,
@@ -132,6 +133,7 @@ router.delete('/variants/:variantId', deleteVariant);
 
 // Import Sản phẩm Excel
 router.post('/products/import-excel', uploadMemory.single('file'), importExcel);
+router.post('/products/bulk-delete', deleteProductsBulk);
 
 // Danh mục & SubCategory
 router.get('/categories/cleanup', cleanupCategories);
