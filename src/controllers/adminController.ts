@@ -245,9 +245,9 @@ export const deleteVariant = async (req: Request, res: Response) => {
   }
 };
 
-// ==========================================
-// 8. IMPORT SẢN PHẨM TỰ ĐỘNG BẰNG EXCELJS (CHUẨN FILE MỚI, KHÔNG LỖI SLUG)
-// ==========================================
+// =========================================================================================
+// 8. IMPORT SẢN PHẨM THEO FORM BÁO CÁO CỦA FOGO STORE (VÀ TƯƠNG THÍCH HARAVAN)
+// =========================================================================================
 export const importExcel = async (req: any, res: Response) => {
   try {
     const file = req.file;
@@ -267,157 +267,134 @@ export const importExcel = async (req: any, res: Response) => {
       return res.status(400).json({ success: false, error: 'File Excel rỗng hoặc không chứa dữ liệu hàng' });
     }
 
-    // Đọc dòng tiêu đề (Header dòng 1)
+    // Đọc header cột và chuyển về chữ thường để khớp chính xác không phân biệt hoa/thường
     const headerMap: Record<string, number> = {};
     worksheet.getRow(1).eachCell((cell, colNumber) => {
-      const headerText = cell.value?.toString().trim() || '';
+      const headerText = cell.value?.toString().trim().toLowerCase() || '';
       if (headerText) {
         headerMap[headerText] = colNumber;
       }
     });
 
-    let importedCount = 0;
-    let variantCount = 0;
+    // Hàm lấy giá trị cell linh hoạt theo danh sách tên cột dự phòng
+    const getRowValue = (row: any, candidates: string[]): string => {
+      for (const name of candidates) {
+        const colIdx = headerMap[name.toLowerCase()];
+        if (colIdx) {
+          let cellVal = row.getCell(colIdx).value;
+          if (cellVal === null || cellVal === undefined) continue;
+
+          if (typeof cellVal === 'object') {
+            if ('result' in cellVal) cellVal = (cellVal as any).result;
+            else if ('richText' in cellVal) cellVal = (cellVal as any).richText.map((t: any) => t.text).join('');
+            else if ('text' in cellVal) cellVal = (cellVal as any).text;
+          }
+          const str = String(cellVal).trim();
+          if (str) return str;
+        }
+      }
+      return '';
+    };
+
+    const parseNum = (val: string): number => {
+      if (!val) return 0;
+      const clean = val.replace(/[^0-9]/g, '');
+      return clean ? Number(clean) : 0;
+    };
+
+    // Cache danh mục để không phải query nhiều lần
     const categoryCache: Record<string, string> = {};
+    const defaultCategories = ['iPhone', 'iPhone Cũ', 'MacBook', 'MacBook Cũ', 'iPad', 'iPad Cũ', 'Watch', 'Watch Cũ', 'Phụ kiện'];
+    for (const cName of defaultCategories) {
+      const found = await prisma.category.findFirst({ where: { name: cName } });
+      if (found) categoryCache[cName] = found.id;
+    }
+
+    // 1. Thu thập và gom nhóm tất cả các dòng Excel theo Sản phẩm Model cha
+    const modelGroupMap = new Map<string, {
+      productName: string;
+      parentSlug: string;
+      categoryName: string;
+      description: string;
+      variants: any[];
+    }>();
 
     for (let r = 2; r <= worksheet.rowCount; r++) {
       const row = worksheet.getRow(r);
       if (!row.hasValues) continue;
 
-      const getVal = (colName: string): string => {
-        const colIdx = headerMap[colName];
-        if (!colIdx) return '';
-        let cellVal = row.getCell(colIdx).value;
-        if (cellVal === null || cellVal === undefined) return '';
+      // Đọc các trường theo cả 2 chuẩn: Báo cáo FoGo và Haravan
+      const rawFullName = getRowValue(row, ['tên sản phẩm', 'tên', 'title', 'product name']);
+      if (!rawFullName) continue;
 
-        if (typeof cellVal === 'object') {
-          if ('result' in cellVal) cellVal = (cellVal as any).result;
-          else if ('richText' in cellVal) cellVal = (cellVal as any).richText.map((t: any) => t.text).join('');
-          else if ('text' in cellVal) cellVal = (cellVal as any).text;
-        }
-        return String(cellVal).trim();
-      };
+      const rawModelSlug = getRowValue(row, ['mã model (slug cha)', 'mã model', 'model slug', 'parent slug']);
+      const rawCategory = getRowValue(row, ['danh mục', 'loại sản phẩm', 'product type', 'category']);
+      const rawStorage = getRowValue(row, ['dung lượng / kích thước', 'dung lượng', 'giá trị thuộc tính 1', 'tùy chọn 1']);
+      const rawColor = getRowValue(row, ['màu sắc', 'giá trị thuộc tính 2', 'tùy chọn 2']);
+      const rawPrice = getRowValue(row, ['giá bán (vnđ)', 'giá bán', 'giá', 'variant price']);
+      const rawOriginalPrice = getRowValue(row, ['giá gốc (vnđ)', 'giá gốc', 'giá so sánh', 'compare at price']);
+      const rawStock = getRowValue(row, ['tồn kho (máy)', 'tồn kho', 'số lượng tồn kho', 'variant inventory qty']);
+      const rawImage = getRowValue(row, ['ảnh màu sắc', 'ảnh biến thể', 'link hình', 'image src']);
+      const rawDescription = getRowValue(row, ['mô tả', 'body (html)', 'description']);
+      const rawVariantSlug = getRowValue(row, ['mã biến thể / slug', 'mã biến thể', 'sku']);
 
-      const productIdHaravan = Number(getVal('Mã sản phẩm') || 0);
-      const variantIdHaravan = Number(getVal('Mã biến thể') || 0);
-      const fullName = getVal('Tên');
-
-      // Tự động bỏ qua dòng rác ID = 0 hoặc thiếu tên
-      if (!fullName || productIdHaravan === 0 || variantIdHaravan === 0) {
-        continue;
+      // 1.1 Bóc tách dung lượng nếu cột dung lượng rỗng
+      let storage = rawStorage;
+      if (!storage || storage.toLowerCase() === 'tiêu chuẩn') {
+        const match = rawFullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i) || rawFullName.match(/\b(\d+\s*mm)\b/i);
+        storage = match ? match[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
       }
+      storage = storage.replace(/\//g, '-').trim();
 
-      // 1. Dung lượng bộ nhớ
-      const storageMatch = fullName.match(/\b(\d+\s*(?:GB|TB)(\s*\/\s*\d+\s*(?:GB|TB))?)\b/i) || fullName.match(/\b(\d+\s*mm)\b/i);
-      const rawStorage = storageMatch ? storageMatch[1].replace(/\s+/g, '').toUpperCase() : 'Tiêu chuẩn';
-      const storage = rawStorage.replace(/\//g, '-');
-
-      // 2. Tên máy chính (loại bỏ dung lượng)
-      const cleanName = fullName
+      // 1.2 Làm sạch tên sản phẩm cha (loại bỏ dung lượng lẻ để gộp chung vào 1 model)
+      const cleanProductName = rawFullName
         .replace(/\b(\d+\s*(?:GB|TB)(\s*\/\s*(?:\d+\s*)?(?:GB|TB))?)\b/gi, '')
         .replace(/\b(\d+\s*mm)\b/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
 
-      // 3. Phân loại danh mục tự động
-      const rawCategory = (getVal('Loại sản phẩm') || '').toLowerCase();
-      const combinedText = `${rawCategory} ${fullName.toLowerCase()}`;
-      const isUsed = combinedText.includes('cũ') || combinedText.includes('like new') || combinedText.includes('99%');
-
-      let standardCategoryName = 'Phụ kiện';
-      if (combinedText.includes('iphone')) {
-        standardCategoryName = isUsed ? 'iPhone Cũ' : 'iPhone';
-      } else if (combinedText.includes('macbook') || combinedText.includes('mac')) {
-        standardCategoryName = isUsed ? 'MacBook Cũ' : 'MacBook';
-      } else if (combinedText.includes('ipad')) {
-        standardCategoryName = isUsed ? 'iPad Cũ' : 'iPad';
-      } else if (combinedText.includes('watch')) {
-        standardCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
+      // 1.3 Tạo slug cha chuẩn
+      let parentSlug = rawModelSlug;
+      if (!parentSlug) {
+        parentSlug = cleanProductName
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[đĐ]/g, 'd')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
       }
 
-      let categoryId = categoryCache[standardCategoryName];
-      if (!categoryId) {
-        let cat = await prisma.category.findFirst({ where: { name: standardCategoryName } });
-        if (!cat) {
-          const catSlug = standardCategoryName
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[đĐ]/g, 'd')
-            .replace(/[^a-z0-9]+/g, '-');
-          cat = await prisma.category.create({ data: { name: standardCategoryName, slug: catSlug } });
-        }
-        categoryId = cat.id;
-        categoryCache[standardCategoryName] = categoryId;
-      }
+      // 1.4 Màu sắc
+      const color = rawColor || 'Tiêu chuẩn';
 
-      // 4. Tìm hoặc tạo Sản Phẩm Cha (Product)
-      const parentSlug = cleanName
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[đĐ]/g, 'd')
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
+      // 1.5 Giá và tồn kho
+      const price = parseNum(rawPrice);
+      const originalPrice = parseNum(rawOriginalPrice) || price;
+      const stock = price <= 0 ? 0 : (parseNum(rawStock) || 10);
 
-      let prod = await prisma.product.findFirst({
-        where: {
-          OR: [
-            { slug: parentSlug },
-            { id: String(productIdHaravan) }
-          ]
-        }
-      });
+      // 1.6 Xác định danh mục chuẩn
+      let finalCategoryName = rawCategory;
+      const combined = `${rawCategory} ${cleanProductName}`.toLowerCase();
+      const isUsed = combined.includes('cũ') || combined.includes('like new') || combined.includes('99%');
 
-      const rawDescription = getVal('Mô tả');
-      const descriptionContent = rawDescription || `Sản phẩm chính hãng ${cleanName} tại Fogo Store`;
+      if (combined.includes('iphone')) finalCategoryName = isUsed ? 'iPhone Cũ' : 'iPhone';
+      else if (combined.includes('ipad')) finalCategoryName = isUsed ? 'iPad Cũ' : 'iPad';
+      else if (combined.includes('macbook') || combined.includes('mac')) finalCategoryName = isUsed ? 'MacBook Cũ' : 'MacBook';
+      else if (combined.includes('watch')) finalCategoryName = isUsed ? 'Watch Cũ' : 'Watch';
+      else if (!finalCategoryName) finalCategoryName = 'Phụ kiện';
 
-      if (!prod) {
-        prod = await prisma.product.create({
-          data: {
-            id: String(productIdHaravan),
-            name: cleanName,
-            slug: `${parentSlug}-${productIdHaravan.toString().slice(-4)}`,
-            categoryId: categoryId,
-            description: descriptionContent,
-          },
-        });
-        importedCount++;
-      } else if (rawDescription && (!prod.description || prod.description.length < 50)) {
-        await prisma.product.update({
-          where: { id: prod.id },
-          data: { description: descriptionContent },
+      // 1.7 Gom vào map theo Model cha
+      if (!modelGroupMap.has(parentSlug)) {
+        modelGroupMap.set(parentSlug, {
+          productName: cleanProductName,
+          parentSlug: parentSlug,
+          categoryName: finalCategoryName,
+          description: rawDescription || `Sản phẩm chính hãng ${cleanProductName} tại FoGo Store`,
+          variants: [],
         });
       }
 
-      // 5. Màu sắc (Color) từ Thuộc tính 1
-      let color = '';
-      const t1 = getVal('Thuộc tính 1').toLowerCase();
-      const t2 = getVal('Thuộc tính 2').toLowerCase();
-
-      if (t1.includes('color') || t1.includes('màu')) {
-        color = getVal('Giá trị thuộc tính 1');
-      } else if (t2.includes('color') || t2.includes('màu')) {
-        color = getVal('Giá trị thuộc tính 2');
-      } else {
-        color = getVal('Giá trị thuộc tính 1') || 'Tiêu chuẩn';
-      }
-
-      // 6. Giá bán & Tồn kho
-      const rawPrice = Number(getVal('Giá') || 0);
-      const price = isNaN(rawPrice) ? 0 : rawPrice;
-
-      const rawOriginalPrice = Number(getVal('Giá so sánh') || price);
-      const originalPrice = isNaN(rawOriginalPrice) ? price : rawOriginalPrice;
-
-      let stock = Number(getVal('Số lượng tồn kho') || 10);
-      if (price <= 0) stock = 0;
-      stock = isNaN(stock) ? 0 : stock;
-
-      const rawImg = getVal('Ảnh biến thể') || getVal('Link hình') || '';
-      const imageUrl = rawImg.startsWith('http') ? rawImg : '';
-
-      // 7. Lưu hoặc cập nhật Biến thể (ProductVariant) - Slug luôn độc nhất kèm ID biến thể
       const cleanColorSlug = color
         .toLowerCase()
         .normalize('NFD')
@@ -425,42 +402,114 @@ export const importExcel = async (req: any, res: Response) => {
         .replace(/[đĐ]/g, 'd')
         .replace(/[^a-z0-9]+/g, '-');
       const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${variantIdHaravan}`;
 
-      await prisma.productVariant.upsert({
-        where: { id: String(variantIdHaravan) },
-        update: {
-          storage,
-          color,
-          slug: variantSlug,
-          price: price > 0 ? price : undefined,
-          originalPrice: originalPrice > 0 ? originalPrice : undefined,
-          stock: price <= 0 ? 0 : stock,
-          images: imageUrl ? [imageUrl] : undefined,
-        },
-        create: {
-          id: String(variantIdHaravan),
-          productId: prod.id,
-          storage,
-          color,
-          slug: variantSlug,
-          price,
-          originalPrice,
-          stock,
-          images: imageUrl ? [imageUrl] : [],
+      const variantSlug = rawVariantSlug || `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}`;
+
+      modelGroupMap.get(parentSlug)!.variants.push({
+        storage,
+        color,
+        price,
+        originalPrice,
+        stock,
+        slug: variantSlug,
+        imageUrl: rawImage.startsWith('http') ? rawImage : '',
+      });
+    }
+
+    let importedProductCount = 0;
+    let importedVariantCount = 0;
+
+    // 2. Lưu từng Model cha và dồn toàn bộ biến thể vào Database
+    for (const [parentSlug, item] of modelGroupMap.entries()) {
+      // 2.1 Xử lý danh mục
+      let catId = categoryCache[item.categoryName];
+      if (!catId) {
+        let cat = await prisma.category.findFirst({ where: { name: item.categoryName } });
+        if (!cat) {
+          const catSlug = item.categoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          cat = await prisma.category.create({ data: { name: item.categoryName, slug: catSlug } });
+        }
+        catId = cat.id;
+        categoryCache[item.categoryName] = catId;
+      }
+
+      // 2.2 Tìm hoặc tạo 1 sản phẩm cha duy nhất
+      let product = await prisma.product.findFirst({
+        where: {
+          OR: [
+            { slug: parentSlug },
+            { name: item.productName },
+          ],
         },
       });
 
-      variantCount++;
+      if (!product) {
+        product = await prisma.product.create({
+          data: {
+            name: item.productName,
+            slug: parentSlug,
+            categoryId: catId,
+            description: item.description,
+          },
+        });
+        importedProductCount++;
+      } else if (item.description && (!product.description || product.description.length < 50)) {
+        await prisma.product.update({
+          where: { id: product.id },
+          data: { description: item.description },
+        });
+      }
+
+      // 2.3 Ghi nhận từng biến thể dung lượng & màu sắc
+      for (const v of item.variants) {
+        const existingVar = await prisma.productVariant.findFirst({
+          where: {
+            productId: product.id,
+            storage: v.storage,
+            color: v.color,
+          },
+        });
+
+        if (existingVar) {
+          await prisma.productVariant.update({
+            where: { id: existingVar.id },
+            data: {
+              slug: v.slug,
+              price: v.price,
+              originalPrice: v.originalPrice,
+              stock: v.stock,
+              ...(v.imageUrl && { images: [v.imageUrl] }),
+            },
+          });
+        } else {
+          await prisma.productVariant.create({
+            data: {
+              productId: product.id,
+              storage: v.storage,
+              color: v.color,
+              slug: v.slug,
+              price: v.price,
+              originalPrice: v.originalPrice,
+              stock: v.stock,
+              images: v.imageUrl ? [v.imageUrl] : [],
+            },
+          });
+          importedVariantCount++;
+        }
+      }
     }
 
     if (file.path && fs.existsSync(file.path)) {
-      fs.unlinkSync(file.path);
+      try {
+        fs.unlinkSync(file.path);
+      } catch (e) {
+        console.warn('Không thể xóa file tạm:', e);
+      }
     }
 
     return res.json({
       success: true,
-      message: `Đã nạp thành công ${importedCount} dòng máy chính và ${variantCount} biến thể vào Database!`,
+      message: `Đã nạp thành công ${modelGroupMap.size} dòng máy và ${importedVariantCount} cấu hình biến thể vào kho FoGo Store!`,
     });
   } catch (err: any) {
     console.error('Lỗi Import Excel:', err);
