@@ -1,10 +1,13 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
+// 1. Lấy tất cả sản phẩm
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
     const products = await prisma.product.findMany({
-      include: { category: true, variants: true }
+      include: { category: true, variants: true },
+      orderBy: { createdAt: 'desc' },
     });
     return res.json({ success: true, data: products });
   } catch (error: any) {
@@ -12,6 +15,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
   }
 };
 
+// 2. Bộ lọc sản phẩm (danh mục, hot, sale, featured)
 export const filterProducts = async (req: Request, res: Response) => {
   try {
     const { category, isFeatured, isFlashSale, isHot } = req.query;
@@ -34,29 +38,8 @@ export const filterProducts = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
-// Xóa hàng loạt sản phẩm
-export const deleteProductsBulk = async (req: Request, res: Response) => {
-  try {
-    const { ids } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ success: false, message: 'Danh sách ID không hợp lệ' });
-    }
 
-    // Xóa toàn bộ biến thể trước
-    await prisma.productVariant.deleteMany({
-      where: { productId: { in: ids } },
-    });
-
-    // Xóa các sản phẩm
-    await prisma.product.deleteMany({
-      where: { id: { in: ids } },
-    });
-
-    return res.json({ success: true, message: `Đã xóa thành công ${ids.length} sản phẩm!` });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, message: error.message || 'Lỗi khi xóa sản phẩm' });
-  }
-};
+// 3. Chi tiết sản phẩm theo slug hoặc ID
 export const getProductBySlug = async (req: Request, res: Response) => {
   try {
     const rawSlug = decodeURIComponent(String(req.params.slug || '')).trim();
@@ -69,7 +52,6 @@ export const getProductBySlug = async (req: Request, res: Response) => {
 
     let product = null;
 
-    // 1. Ưu tiên tìm chính xác theo proid (ID sản phẩm gốc)
     if (proid) {
       product = await prisma.product.findUnique({
         where: { id: proid },
@@ -77,28 +59,26 @@ export const getProductBySlug = async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Tìm theo cleanBaseSlug hoặc rawSlug
     if (!product) {
       product = await prisma.product.findFirst({
         where: {
           OR: [
             { slug: cleanBaseSlug },
             { slug: rawSlug },
-            { slug: { startsWith: cleanBaseSlug } }
+            { slug: { startsWith: cleanBaseSlug } },
           ],
         },
         include: { category: true, variants: true },
       });
     }
 
-    // 3. Dự phòng tìm qua slug của biến thể (Variant)
     if (!product) {
       const variant = await prisma.productVariant.findFirst({
         where: {
           OR: [
             { slug: cleanBaseSlug },
             { slug: rawSlug },
-            { slug: { contains: cleanBaseSlug } }
+            { slug: { contains: cleanBaseSlug } },
           ],
         },
         include: {
@@ -113,11 +93,9 @@ export const getProductBySlug = async (req: Request, res: Response) => {
     }
 
     if (!product) {
-      console.warn(`[API] Không tìm thấy sản phẩm với slug: "${rawSlug}", base: "${cleanBaseSlug}", proid: "${proid}"`);
       return res.status(404).json({ success: false, error: 'Không tìm thấy sản phẩm' });
     }
 
-    // Format an toàn danh sách ảnh biến thể (khai báo imgs: any để xử lý string hoặc string[])
     const parsedVariants = product.variants.map((v) => {
       let imgs: any = v.images;
       if (typeof imgs === 'string') {
@@ -137,5 +115,47 @@ export const getProductBySlug = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Lỗi lấy chi tiết sản phẩm:', err);
     return res.status(500).json({ success: false, error: 'Lỗi server' });
+  }
+};
+
+// 4. Lấy danh sách danh mục
+export const getCategories = async (req: Request, res: Response) => {
+  try {
+    const categories = await prisma.category.findMany({
+      include: {
+        _count: {
+          select: { products: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+    return res.json({ success: true, data: categories });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 5. Xóa hàng loạt sản phẩm (tự động xóa cache)
+export const deleteProductsBulk = async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Danh sách ID không hợp lệ' });
+    }
+
+    await prisma.productVariant.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    await prisma.product.deleteMany({
+      where: { id: { in: ids } },
+    });
+
+    // Làm mới cache sản phẩm
+    await clearCachePattern('fogo_cache:*');
+
+    return res.json({ success: true, message: `Đã xóa thành công ${ids.length} sản phẩm!` });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Lỗi khi xóa sản phẩm' });
   }
 };
