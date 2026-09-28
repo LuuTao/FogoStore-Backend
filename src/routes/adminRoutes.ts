@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { updateProductTags } from '../controllers/productTagsController';
 import jwt from 'jsonwebtoken';
 import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
 import { verifyAdmin } from '../lib/authMiddleware';
@@ -109,6 +110,7 @@ router.delete('/orders/:id', async (req, res) => {
 // 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ
 // ============================================================================
 router.use(verifyAdmin);
+router.put('/products/:id/tags', updateProductTags);
 
 // Quản trị bài viết CMS (Thêm, Sửa, Xóa, Xóa hàng loạt, Import Excel/Word)
 router.post('/upload-image', uploadImage.single('image'), (req: any, res) => {

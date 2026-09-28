@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
+import { validateTags, canEditProductTags } from './productTagsController';
+import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ==========================================
 // 1. LẤY TỒN KHO & BIẾN THỂ SẢN PHẨM
@@ -175,6 +177,12 @@ export const addVariant = async (req: Request, res: Response) => {
 // ==========================================
 export const updateVariant = async (req: Request, res: Response) => {
   try {
+    if (req.body.tags !== undefined && !canEditProductTags(req)) {
+      return res.status(403).json({ success: false, error: 'Vui lòng đăng nhập lại tài khoản quản trị' });
+    }
+    if (req.body.tags !== undefined && !validateTags(req.body.tags)) {
+      return res.status(400).json({ success: false, error: 'Tag không hợp lệ' });
+    }
     const id = (req.params.id || req.params.variantId) as string;
     const { storage, color, origin, price, originalPrice, stock, images } = req.body;
 
@@ -193,7 +201,14 @@ export const updateVariant = async (req: Request, res: Response) => {
     const p = price !== undefined ? parseFloat(price) : undefined;
     const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? parseInt(stock, 10) : undefined);
 
-    const updated = await prisma.productVariant.update({
+    const updated = await prisma.$transaction(async (tx) => {
+      if (req.body.tags !== undefined) {
+        const variant = await tx.productVariant.findUniqueOrThrow({ where: { id }, include: { product: true } });
+        const existing = variant.product.specs;
+        const specs = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
+        await tx.product.update({ where: { id: variant.productId }, data: { specs: { ...specs, productTags: req.body.tags } } });
+      }
+      return tx.productVariant.update({
       where: { id },
       data: {
         ...(storage !== undefined && { storage: String(storage).replace(/\//g, '-') }),
@@ -209,6 +224,8 @@ export const updateVariant = async (req: Request, res: Response) => {
       },
     });
 
+    });
+    await clearCachePattern('fogo_cache:*products*');
     return res.json({ success: true, message: 'Đã lưu cấu hình biến thể vào Database!', data: updated });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message || 'Lỗi cập nhật biến thể' });

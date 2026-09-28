@@ -45,6 +45,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
         select: {
           id: true,
           name: true,
+          specs: true,
           slug: true,
           isFeatured: true,
           isFlashSale: true,
