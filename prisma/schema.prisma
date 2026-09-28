@@ -88,6 +88,8 @@ model ProductVariant {
   storage       String
   color         String
   origin        String?     @default("Việt Nam")
+  size          String?
+  version       String?
   price         Float       @default(0)
   originalPrice Float       @default(0)
   stock         Int         @default(0)

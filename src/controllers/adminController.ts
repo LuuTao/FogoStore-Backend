@@ -137,7 +137,7 @@ export const deleteProductsBulk = async (req: Request, res: Response) => {
 // ==========================================
 export const addVariant = async (req: Request, res: Response) => {
   try {
-    const { productId, storage, color, origin, price, originalPrice, stock, imageUrl } = req.body;
+    const { productId, storage, color, origin, size, version, price, originalPrice, stock, imageUrl } = req.body;
     if (!productId || !storage || !color) {
       return res.status(400).json({ success: false, error: 'Vui lòng điền đủ thông tin bắt buộc' });
     }
@@ -157,6 +157,8 @@ export const addVariant = async (req: Request, res: Response) => {
         storage: cleanSt,
         color,
         origin: orig,
+        ...(size !== undefined && { size: String(size) }),
+        ...(version !== undefined && { version: String(version) }),
         slug: variantSlug,
         price: p,
         originalPrice: Number(originalPrice || p),
@@ -184,7 +186,7 @@ export const updateVariant = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Tag không hợp lệ' });
     }
     const id = (req.params.id || req.params.variantId) as string;
-    const { storage, color, origin, price, originalPrice, stock, images } = req.body;
+    const { storage, color, origin, size, version, price, originalPrice, stock, images } = req.body;
 
     let formattedImages: string[] = [];
     if (Array.isArray(images)) {
@@ -214,6 +216,8 @@ export const updateVariant = async (req: Request, res: Response) => {
         ...(storage !== undefined && { storage: String(storage).replace(/\//g, '-') }),
         ...(color !== undefined && { color: String(color) }),
         ...(origin !== undefined && { origin: String(origin) }),
+        ...(size !== undefined && { size: String(size) }),
+        ...(version !== undefined && { version: String(version) }),
         ...(p !== undefined && { price: p }),
         ...(originalPrice !== undefined && { originalPrice: parseFloat(originalPrice) }),
         ...(s !== undefined && { stock: s }),
