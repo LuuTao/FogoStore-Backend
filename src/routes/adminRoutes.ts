@@ -47,6 +47,7 @@ import {
   updateProductFaq,
   deleteProductFaq,
 } from '../controllers/productFaqController';
+import { getFlashSale, updateFlashSaleConfig, updateProductFlashSale } from '../controllers/flashSaleController';
 
 const router = Router();
 
@@ -143,6 +144,9 @@ router.get('/product-faqs', getProductFaqsAdmin);
 router.post('/product-faqs', createProductFaq);
 router.put('/product-faqs/:id', updateProductFaq);
 router.delete('/product-faqs/:id', deleteProductFaq);
+router.get('/flash-sale', getFlashSale);
+router.put('/flash-sale', updateFlashSaleConfig);
+router.patch('/products/:id/flash-sale', updateProductFlashSale);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);

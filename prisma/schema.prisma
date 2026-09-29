@@ -188,6 +188,16 @@ model ProductFaq {
   updatedAt DateTime @updatedAt
 }
 
+model FlashSaleConfig {
+  id        String    @id @default("HOME")
+  title     String    @default("FLASH SALE GIÁ SỐC")
+  startAt   DateTime?
+  endAt     DateTime?
+  isActive  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
 model CartItem {
   id        String   @id @default(uuid())
   userId    String
