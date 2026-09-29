@@ -93,7 +93,7 @@ export const getPosts = async (req: Request, res: Response) => {
 
 export const createPost = async (req: Request, res: Response) => {
   try {
-    const { title, slug, summary, content, thumbnail } = req.body;
+    const { title, slug, summary, content, thumbnail, relatedProductIds } = req.body;
     if (!title) {
       return res.status(400).json({ success: false, message: 'Tiêu đề bài viết không được để trống' });
     }
@@ -106,6 +106,10 @@ export const createPost = async (req: Request, res: Response) => {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
 
+    const normalizedRelatedProductIds = Array.isArray(relatedProductIds)
+      ? JSON.stringify([...new Set(relatedProductIds.map((id: unknown) => String(id).trim()).filter(Boolean))])
+      : null;
+
     const newPost = await prisma.post.create({
       data: {
         title,
@@ -113,7 +117,8 @@ export const createPost = async (req: Request, res: Response) => {
         summary: summary || '',
         content: content || '',
         thumbnail: thumbnail || '',
-      },
+        relatedProductIds: normalizedRelatedProductIds,
+      } as any,
     });
 
     return res.status(201).json({ success: true, data: newPost, message: 'Tạo bài viết thành công!' });
@@ -125,7 +130,10 @@ export const createPost = async (req: Request, res: Response) => {
 export const updatePost = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { title, slug, summary, content, thumbnail } = req.body;
+    const { title, slug, summary, content, thumbnail, relatedProductIds } = req.body;
+    const normalizedRelatedProductIds = Array.isArray(relatedProductIds)
+      ? JSON.stringify([...new Set(relatedProductIds.map((item: unknown) => String(item).trim()).filter(Boolean))])
+      : undefined;
 
     const updated = await prisma.post.update({
       where: { id: String(id) },
@@ -135,7 +143,8 @@ export const updatePost = async (req: Request, res: Response) => {
         ...(summary !== undefined && { summary }),
         ...(content !== undefined && { content }),
         ...(thumbnail !== undefined && { thumbnail }),
-      },
+        ...(normalizedRelatedProductIds !== undefined && { relatedProductIds: normalizedRelatedProductIds }),
+      } as any,
     });
 
     return res.json({ success: true, data: updated, message: 'Cập nhật bài viết thành công!' });

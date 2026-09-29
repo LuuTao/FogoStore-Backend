@@ -160,6 +160,7 @@ model Post {
   author    User?    @relation(fields: [authorId], references: [id])
   metaTitle String?
   metaDesc  String?
+  relatedProductIds String? @db.Text
   published Boolean  @default(true)
   views     Int      @default(0)
   createdAt DateTime @default(now())
