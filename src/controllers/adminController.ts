@@ -29,7 +29,7 @@ export const getInventory = async (req: Request, res: Response) => {
 // ==========================================
 export const createFullProduct = async (req: Request, res: Response) => {
   try {
-    const { name, categoryName, description, isFeatured, isFlashSale, isHot, variants } = req.body;
+    const { name, categoryName, description, isFeatured, isHot, variants } = req.body;
 
     if (!name || !categoryName || !variants || variants.length === 0) {
       return res.status(400).json({
@@ -63,7 +63,7 @@ export const createFullProduct = async (req: Request, res: Response) => {
         description: description || `Mô tả chính hãng của ${name}`,
         categoryId: cat.id,
         isFeatured: Boolean(isFeatured),
-        isFlashSale: Boolean(isFlashSale),
+        isFlashSale: false,
         isHot: Boolean(isHot),
         variants: {
           create: variants.map((v: any) => {
@@ -83,11 +83,12 @@ export const createFullProduct = async (req: Request, res: Response) => {
               price: p,
               originalPrice: Number(v.originalPrice || p || 0),
               stock: s,
+              isFlashSale: Boolean(v.isFlashSale),
               images: v.imageUrl ? [v.imageUrl] : Array.isArray(v.images) ? v.images : [],
             };
           }),
         },
-      },
+      } as any,
       include: { variants: true, category: true },
     });
 
@@ -280,9 +281,10 @@ export const updateVariant = async (req: Request, res: Response) => {
 export const patchVariant = async (req: Request, res: Response) => {
   try {
     const id = (req.params.variantId || req.params.id) as string;
-    const { stock, price } = req.body;
+    const { stock, price, originalPrice, storage, color, origin, size, version } = req.body;
 
     const p = price !== undefined ? Number(price) : undefined;
+    const original = originalPrice !== undefined ? Number(originalPrice) : undefined;
     const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? Number(stock) : undefined);
 
     const updated = await prisma.productVariant.update({
@@ -290,6 +292,12 @@ export const patchVariant = async (req: Request, res: Response) => {
       data: {
         ...(s !== undefined && { stock: s }),
         ...(p !== undefined && { price: p }),
+        ...(original !== undefined && { originalPrice: original }),
+        ...(storage !== undefined && { storage: String(storage) }),
+        ...(color !== undefined && { color: String(color) }),
+        ...(origin !== undefined && { origin: String(origin) }),
+        ...(size !== undefined && { size: size ? String(size) : null }),
+        ...(version !== undefined && { version: version ? String(version) : null }),
       },
     });
     return res.json({ success: true, data: updated });

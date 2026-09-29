@@ -3,6 +3,8 @@ import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 const flashSaleConfig = (prisma as any).flashSaleConfig;
+const productDelegate = (prisma as any).product;
+const productVariantDelegate = (prisma as any).productVariant;
 
 const getStatus = (config: any) => {
   if (!config?.isActive || !config.startAt || !config.endAt) return 'INACTIVE';
@@ -19,11 +21,14 @@ const getConfig = async () => flashSaleConfig.findUnique({ where: { id: 'HOME' }
 export const getFlashSale = async (_req: Request, res: Response) => {
   try {
     const config = await getConfig();
-    const products = await prisma.product.findMany({
-      where: { isFlashSale: true },
+    const products = await productDelegate.findMany({
+      where: { variants: { some: { isFlashSale: true } } },
       include: {
         category: true,
-        variants: { orderBy: [{ price: 'asc' }, { createdAt: 'asc' }] },
+        variants: {
+          where: { isFlashSale: true },
+          orderBy: [{ price: 'asc' }, { createdAt: 'asc' }],
+        },
       },
       orderBy: [{ soldQuantity: 'desc' }, { updatedAt: 'desc' }],
     });
@@ -73,15 +78,23 @@ export const updateFlashSaleConfig = async (req: Request, res: Response) => {
   }
 };
 
-export const updateProductFlashSale = async (req: Request, res: Response) => {
+export const updateVariantFlashSale = async (req: Request, res: Response) => {
   try {
-    const product = await prisma.product.update({
+    const variant = await productVariantDelegate.update({
       where: { id: String(req.params.id) },
       data: { isFlashSale: Boolean(req.body.isFlashSale) },
-      select: { id: true, name: true, isFlashSale: true },
+      select: {
+        id: true,
+        storage: true,
+        color: true,
+        size: true,
+        version: true,
+        isFlashSale: true,
+        product: { select: { id: true, name: true } },
+      },
     });
     clearCachePattern('fogo_cache:*').catch(() => {});
-    return res.json({ success: true, data: product });
+    return res.json({ success: true, data: variant });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }

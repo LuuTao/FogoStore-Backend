@@ -47,7 +47,8 @@ import {
   updateProductFaq,
   deleteProductFaq,
 } from '../controllers/productFaqController';
-import { getFlashSale, updateFlashSaleConfig, updateProductFlashSale } from '../controllers/flashSaleController';
+import { getFlashSale, updateFlashSaleConfig, updateVariantFlashSale } from '../controllers/flashSaleController';
+import { getHomeLayout, updateHomeLayout } from '../controllers/homeLayoutController';
 
 const router = Router();
 
@@ -146,7 +147,9 @@ router.put('/product-faqs/:id', updateProductFaq);
 router.delete('/product-faqs/:id', deleteProductFaq);
 router.get('/flash-sale', getFlashSale);
 router.put('/flash-sale', updateFlashSaleConfig);
-router.patch('/products/:id/flash-sale', updateProductFlashSale);
+router.patch('/variants/:id/flash-sale', updateVariantFlashSale);
+router.get('/home-layout', getHomeLayout);
+router.put('/home-layout', updateHomeLayout);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
