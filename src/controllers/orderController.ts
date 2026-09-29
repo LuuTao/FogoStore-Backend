@@ -52,38 +52,35 @@ export const createOrder = async (req: Request, res: Response) => {
 
       for (const item of rawItems) {
         const rawVariantId = String(item.variantId || item.id || '');
-        let validVariantId: string | null = null;
-
-        if (rawVariantId && !rawVariantId.startsWith('mock-') && !rawVariantId.startsWith('fallback-')) {
-          const variant = await tx.productVariant.findUnique({
-            where: { id: rawVariantId },
-          });
-
-          if (variant) {
-            const requestedQty = Number(item.quantity || 1);
-            if (variant.stock < requestedQty) {
-              throw new Error(`Sản phẩm "${item.name || variant.slug}" chỉ còn ${variant.stock} chiếc, không đủ số lượng bạn yêu cầu!`);
-            }
-
-            // Trừ số lượng tồn kho
-            await tx.productVariant.update({
-              where: { id: variant.id },
-              data: {
-                stock: { decrement: requestedQty },
-              },
-            });
-
-            validVariantId = variant.id;
-          }
+        if (!rawVariantId || rawVariantId.startsWith('mock-') || rawVariantId.startsWith('fallback-')) {
+          throw new Error('Sản phẩm trong giỏ không còn hợp lệ. Vui lòng tải lại trang và chọn lại cấu hình sản phẩm.');
         }
 
+        const variant = await tx.productVariant.findUnique({
+          where: { id: rawVariantId },
+        });
+        if (!variant) {
+          throw new Error('Sản phẩm trong giỏ đã thay đổi hoặc không còn tồn tại. Vui lòng tải lại trang.');
+        }
+
+        const requestedQty = Math.max(1, Number(item.quantity || 1));
+        if (variant.stock < requestedQty) {
+          throw new Error(`Sản phẩm "${item.name || variant.slug}" chỉ còn ${variant.stock} chiếc, không đủ số lượng bạn yêu cầu!`);
+        }
+
+        // Trừ số lượng tồn kho của đúng biến thể khi đơn được tạo thành công.
+        await tx.productVariant.update({
+          where: { id: variant.id },
+          data: { stock: { decrement: requestedQty } },
+        });
+
         formattedItems.push({
-          variantId: validVariantId,
+          variantId: variant.id,
           productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
           storage: String(item.storage || item.version || 'Tiêu chuẩn'),
           color: String(item.color || 'Mặc định'),
           price: Number(item.price || 0),
-          quantity: Number(item.quantity || 1),
+          quantity: requestedQty,
           imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
         });
       }
@@ -255,7 +252,10 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     if (orderStatus) dataToUpdate.orderStatus = orderStatus;
     if (paymentStatus) dataToUpdate.paymentStatus = paymentStatus;
 
-    const existingOrder = await prisma.order.findUnique({ where: { id: String(id) } });
+    const existingOrder = await prisma.order.findUnique({
+      where: { id: String(id) },
+      include: { items: true },
+    });
     if (!existingOrder) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
     }
@@ -266,11 +266,28 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       dataToUpdate.paymentStatus = 'PAID';
     }
 
-    const updated = await prisma.order.update({
-      where: { id: String(id) },
-      data: dataToUpdate,
-      include: { items: true },
+    const isCancelling = String(orderStatus || '').toUpperCase() === 'CANCELLED';
+    const updated = await prisma.$transaction(async (tx) => {
+      // Chỉ hoàn kho đúng một lần khi trạng thái chuyển sang HỦY.
+      if (isCancelling && existingOrder.orderStatus !== 'CANCELLED') {
+        for (const item of existingOrder.items) {
+          if (item.variantId) {
+            await tx.productVariant.updateMany({
+              where: { id: item.variantId },
+              data: { stock: { increment: item.quantity } },
+            });
+          }
+        }
+      }
+
+      return tx.order.update({
+        where: { id: String(id) },
+        data: dataToUpdate,
+        include: { items: true },
+      });
     });
+
+    if (isCancelling) clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.json({ success: true, data: updated });
   } catch (error: any) {

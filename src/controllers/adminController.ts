@@ -821,6 +821,7 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: String(id) },
+      include: { items: true },
     });
 
     if (!existingOrder) {
@@ -838,14 +839,31 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
       finalPaymentStatus = 'UNPAID';
     }
 
-    const updated = await prisma.order.update({
-      where: { id: String(id) },
-      data: {
-        ...(newOrderStatus && { orderStatus: newOrderStatus }),
-        paymentStatus: finalPaymentStatus,
-      },
-      include: { items: true },
+    const isCancelling = String(newOrderStatus || '').toUpperCase() === 'CANCELLED';
+    const updated = await prisma.$transaction(async (tx) => {
+      // Hoàn kho một lần duy nhất khi admin chuyển đơn sang trạng thái HỦY.
+      if (isCancelling && existingOrder.orderStatus !== 'CANCELLED') {
+        for (const item of existingOrder.items) {
+          if (item.variantId) {
+            await tx.productVariant.updateMany({
+              where: { id: item.variantId },
+              data: { stock: { increment: item.quantity } },
+            });
+          }
+        }
+      }
+
+      return tx.order.update({
+        where: { id: String(id) },
+        data: {
+          ...(newOrderStatus && { orderStatus: newOrderStatus }),
+          paymentStatus: finalPaymentStatus,
+        },
+        include: { items: true },
+      });
     });
+
+    if (isCancelling) clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.json({
       success: true,
