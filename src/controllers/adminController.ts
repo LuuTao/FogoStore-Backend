@@ -111,6 +111,44 @@ export const deleteProduct = async (req: Request, res: Response) => {
   }
 };
 
+// Lưu chung mô tả, chính sách và thông số cho nhiều sản phẩm được chọn trong admin.
+export const updateProductsSpecifications = async (req: Request, res: Response) => {
+  try {
+    const productIds: string[] = (Array.isArray(req.body.productIds)
+      ? [...new Set(req.body.productIds.map((id: unknown) => String(id).trim()).filter(Boolean))]
+      : []) as string[];
+    if (productIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'Vui lòng chọn ít nhất một sản phẩm' });
+    }
+
+    const description = String(req.body.description || '');
+    const salesPolicy = String(req.body.salesPolicy || '');
+    const specifications = Array.isArray(req.body.specifications) ? req.body.specifications : [];
+    const selectedProducts = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, specs: true },
+    });
+
+    await prisma.$transaction(selectedProducts.map((product) => {
+      const previousSpecs = product.specs && typeof product.specs === 'object' && !Array.isArray(product.specs)
+        ? product.specs as Record<string, unknown>
+        : {};
+      return prisma.product.update({
+        where: { id: product.id },
+        data: {
+          description,
+          specs: { ...previousSpecs, salesPolicy, specifications },
+        },
+      });
+    }));
+
+    clearCachePattern('fogo_cache:*').catch(() => {});
+    return res.json({ success: true, data: { updatedCount: selectedProducts.length } });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const deleteProductsBulk = async (req: Request, res: Response) => {
   try {
     const { ids } = req.body;

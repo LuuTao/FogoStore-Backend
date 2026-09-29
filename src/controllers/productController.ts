@@ -45,6 +45,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
         select: {
           id: true,
           name: true,
+          description: true,
           specs: true,
           slug: true,
           isFeatured: true,
@@ -52,6 +53,9 @@ export const getAllProducts = async (req: Request, res: Response) => {
           isHot: true,
           createdAt: true,
           category: {
+            select: { id: true, name: true, slug: true },
+          },
+          series: {
             select: { id: true, name: true, slug: true },
           },
           // Lấy trọn vẹn TẤT CẢ các biến thể trong DB, không giới hạn
@@ -74,8 +78,14 @@ export const getAllProducts = async (req: Request, res: Response) => {
       prisma.product.count({ where: whereClause }),
     ]);
 
-    const cleanedProducts = products.map((prod) => ({
+    const cleanedProducts = products.map((prod) => {
+      const savedSpecs = prod.specs && typeof prod.specs === 'object' && !Array.isArray(prod.specs)
+        ? prod.specs as Record<string, unknown>
+        : {};
+      return {
       ...prod,
+      specifications: savedSpecs.specifications || prod.specs,
+      salesPolicy: savedSpecs.salesPolicy || '',
       variants: (prod.variants || []).map((v) => {
         let imgs: any = v.images;
         if (typeof imgs === 'string') {
@@ -90,7 +100,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
           images: Array.isArray(imgs) ? imgs : [],
         };
       }),
-    }));
+    }});
 
     return res.json({
       success: true,
@@ -273,6 +283,8 @@ export const getProductBySlug = async (req: Request, res: Response) => {
       success: true,
       data: {
         ...product,
+        specifications: (product.specs as any)?.specifications || product.specs,
+        salesPolicy: (product.specs as any)?.salesPolicy || '',
         variants: parsedVariants,
         matchedVariantId: matchedVariant?.id || null,
         initialVariant: matchedVariant || null,

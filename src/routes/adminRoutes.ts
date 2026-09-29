@@ -28,6 +28,7 @@ import {
   getAllOrdersAdmin,
   updateOrderStatusAdmin,
   getTrafficAnalytics,
+  updateProductsSpecifications,
 } from '../controllers/adminController';
 
 import {
@@ -40,6 +41,12 @@ import {
   syncBanners,
   importPostsFromFile,
 } from '../controllers/contentController';
+import {
+  getProductFaqsAdmin,
+  createProductFaq,
+  updateProductFaq,
+  deleteProductFaq,
+} from '../controllers/productFaqController';
 
 const router = Router();
 
@@ -132,8 +139,14 @@ router.post('/posts/bulk-delete', adminActionLimiter, deletePostsBulk);
 router.post('/posts/import', adminActionLimiter, uploadFile.single('file'), importPostsFromFile);
 router.post('/posts/import-haravan', adminActionLimiter, uploadFile.single('file'), importPostsFromFile);
 
+router.get('/product-faqs', getProductFaqsAdmin);
+router.post('/product-faqs', createProductFaq);
+router.put('/product-faqs/:id', updateProductFaq);
+router.delete('/product-faqs/:id', deleteProductFaq);
+
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);
+router.put('/products/specifications', updateProductsSpecifications);
 router.delete('/inventory/:id', deleteVariant);
 router.post('/products/full', uploadImage.array('images', 8), createFullProduct);
 router.delete('/products/:id', deleteProduct);
