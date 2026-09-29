@@ -789,18 +789,15 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy đơn hàng!' });
     }
 
-    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
-    const isQrPayment = ['vnpay-qr', 'momo', 'qr', 'bank'].includes(rawMethod);
-
     let finalPaymentStatus = existingOrder.paymentStatus;
-    if (isQrPayment) {
+    // Đơn online vẫn chờ xác nhận tiền. Chỉ đơn COD hoàn tất mới tự chuyển PAID;
+    // QR/online phải được cập nhật paymentStatus riêng sau khi kiểm tra giao dịch.
+    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
+    const isOnlinePayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((method) => rawMethod.includes(method));
+    if (newOrderStatus === 'COMPLETED' && !isOnlinePayment) {
       finalPaymentStatus = 'PAID';
-    } else {
-      if (newOrderStatus === 'COMPLETED') {
-        finalPaymentStatus = 'PAID';
-      } else if (newOrderStatus) {
-        finalPaymentStatus = 'UNPAID';
-      }
+    } else if (newOrderStatus && !isOnlinePayment) {
+      finalPaymentStatus = 'UNPAID';
     }
 
     const updated = await prisma.order.update({

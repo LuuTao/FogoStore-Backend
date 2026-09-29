@@ -93,8 +93,9 @@ router.get('/posts', getPosts);
 router.get('/subcategories', getSubCategories);
 
 // Cập nhật và Xóa đơn hàng trực tiếp
-router.patch('/orders/:id/status', updateOrderStatusAdmin);
-router.put('/orders/:id/status', updateOrderStatusAdmin);
+// Cập nhật trạng thái đơn (đặc biệt paymentStatus=PAID) bắt buộc có phiên admin.
+router.patch('/orders/:id/status', verifyAdmin, updateOrderStatusAdmin);
+router.put('/orders/:id/status', verifyAdmin, updateOrderStatusAdmin);
 router.delete('/orders/:id', async (req, res) => {
   try {
     const { id } = req.params;

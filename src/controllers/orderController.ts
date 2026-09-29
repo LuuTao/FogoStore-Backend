@@ -41,9 +41,10 @@ export const createOrder = async (req: Request, res: Response) => {
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
 
     // Nhận diện phương thức thanh toán
-    const rawMethod = (body.paymentMethod || 'COD').toString().toLowerCase();
-    const isQrPayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((m) => rawMethod.includes(m));
-    const initialPaymentStatus = isQrPayment ? 'PAID' : (body.paymentStatus || 'PENDING');
+    // Tạo đơn online chỉ mới ghi nhận yêu cầu thanh toán. Không được đánh dấu
+    // PAID từ dữ liệu phía trình duyệt; trạng thái này chỉ được cập nhật sau
+    // khi webhook/cổng thanh toán hoặc nhân viên xác nhận tiền đã vào tài khoản.
+    const initialPaymentStatus = 'PENDING';
 
     // Chạy trong Transaction: Vừa kiểm tra trừ tồn kho, vừa tạo đơn
     const newOrder = await prisma.$transaction(async (tx) => {
@@ -254,7 +255,14 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     if (orderStatus) dataToUpdate.orderStatus = orderStatus;
     if (paymentStatus) dataToUpdate.paymentStatus = paymentStatus;
 
-    if (orderStatus === 'COMPLETED' && !paymentStatus) {
+    const existingOrder = await prisma.order.findUnique({ where: { id: String(id) } });
+    if (!existingOrder) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    }
+    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
+    const isOnlinePayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((method) => rawMethod.includes(method));
+
+    if (orderStatus === 'COMPLETED' && !paymentStatus && !isOnlinePayment) {
       dataToUpdate.paymentStatus = 'PAID';
     }
 
@@ -339,7 +347,7 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
   try {
     const rawCode = req.params.orderCode;
     const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
-    const { customerName, customerPhone, address, note, paymentMethod, paymentStatus } = req.body;
+    const { customerName, customerPhone, address, note, paymentMethod } = req.body;
 
     if (!orderCode) {
       return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
@@ -367,7 +375,6 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
         ...(address !== undefined && { address: address.trim() }),
         ...(note !== undefined && { note: note.trim() }),
         ...(paymentMethod && { paymentMethod }),
-        ...(paymentStatus && { paymentStatus }),
       },
       include: { items: true },
     });

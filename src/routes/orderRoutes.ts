@@ -11,6 +11,7 @@ import {
   deleteBulkOrders
 } from '../controllers/orderController';
 import { slidingWindowWithFreeze } from '../middlewares/rateLimiter';
+import { verifyAdmin } from '../lib/authMiddleware';
 
 const router = Router();
 
@@ -26,6 +27,8 @@ const orderCheckoutLimiter = slidingWindowWithFreeze({
 // ==========================================
 router.post('/', orderCheckoutLimiter, createOrder);
 router.get('/my-orders', getMyOrders);
+// Endpoint polling trạng thái thanh toán của màn hình QR.
+router.get('/:orderCode/status', getOrderByCode);
 router.get('/:orderCode', getOrderByCode);
 router.patch('/:orderCode/cancel', cancelOrderCustomer);
 router.patch('/:orderCode/update', updateOrderCustomer);
@@ -34,8 +37,8 @@ router.patch('/:orderCode/update', updateOrderCustomer);
 // 2. ROUTE QUẢN TRỊ VIÊN (ADMIN)
 // ==========================================
 router.get('/admin/orders', getAllOrdersAdmin);
-router.patch('/admin/orders/:id/status', updateOrderStatus);
-router.post('/admin/orders/bulk-delete', deleteBulkOrders);
-router.delete('/admin/orders/:id', deleteOrder);
+router.patch('/admin/orders/:id/status', verifyAdmin, updateOrderStatus);
+router.post('/admin/orders/bulk-delete', verifyAdmin, deleteBulkOrders);
+router.delete('/admin/orders/:id', verifyAdmin, deleteOrder);
 
 export default router;
