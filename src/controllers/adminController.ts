@@ -4,6 +4,8 @@ import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
 import { validateTags, canEditProductTags } from './productTagsController';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
+import { releaseOrderStock, isOnlinePaymentMethod } from '../services/stockReservationService';
+import { writeAuditLog } from '../services/auditLogService';
 
 // ==========================================
 // 1. LẤY TỒN KHO & BIẾN THỂ SẢN PHẨM
@@ -243,13 +245,14 @@ export const updateVariant = async (req: Request, res: Response) => {
     const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? parseInt(stock, 10) : undefined);
 
     const updated = await prisma.$transaction(async (tx) => {
+      const before = await tx.productVariant.findUnique({ where: { id } });
       if (req.body.tags !== undefined) {
         const variant = await tx.productVariant.findUniqueOrThrow({ where: { id }, include: { product: true } });
         const existing = variant.product.specs;
         const specs = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
         await tx.product.update({ where: { id: variant.productId }, data: { specs: { ...specs, productTags: req.body.tags } } });
       }
-      return tx.productVariant.update({
+      const saved = await tx.productVariant.update({
       where: { id },
       data: {
         ...(storage !== undefined && { storage: String(storage).replace(/\//g, '-') }),
@@ -266,7 +269,14 @@ export const updateVariant = async (req: Request, res: Response) => {
         product: { include: { category: true } },
       },
     });
-
+      await writeAuditLog(tx, req, {
+        action: 'PRODUCT_VARIANT_UPDATED',
+        entityType: 'PRODUCT_VARIANT',
+        entityId: id,
+        before,
+        after: saved,
+      });
+      return saved;
     });
     await clearCachePattern('fogo_cache:*products*');
     return res.json({ success: true, message: 'Đã lưu cấu hình biến thể vào Database!', data: updated });
@@ -287,18 +297,29 @@ export const patchVariant = async (req: Request, res: Response) => {
     const original = originalPrice !== undefined ? Number(originalPrice) : undefined;
     const s = p !== undefined && p <= 0 ? 0 : (stock !== undefined ? Number(stock) : undefined);
 
-    const updated = await prisma.productVariant.update({
-      where: { id },
-      data: {
-        ...(s !== undefined && { stock: s }),
-        ...(p !== undefined && { price: p }),
-        ...(original !== undefined && { originalPrice: original }),
-        ...(storage !== undefined && { storage: String(storage) }),
-        ...(color !== undefined && { color: String(color) }),
-        ...(origin !== undefined && { origin: String(origin) }),
-        ...(size !== undefined && { size: size ? String(size) : null }),
-        ...(version !== undefined && { version: version ? String(version) : null }),
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const before = await tx.productVariant.findUnique({ where: { id } });
+      const saved = await tx.productVariant.update({
+        where: { id },
+        data: {
+          ...(s !== undefined && { stock: s }),
+          ...(p !== undefined && { price: p }),
+          ...(original !== undefined && { originalPrice: original }),
+          ...(storage !== undefined && { storage: String(storage) }),
+          ...(color !== undefined && { color: String(color) }),
+          ...(origin !== undefined && { origin: String(origin) }),
+          ...(size !== undefined && { size: size ? String(size) : null }),
+          ...(version !== undefined && { version: version ? String(version) : null }),
+        },
+      });
+      await writeAuditLog(tx, req, {
+        action: 'PRODUCT_VARIANT_QUICK_UPDATED',
+        entityType: 'PRODUCT_VARIANT',
+        entityId: id,
+        before,
+        after: saved,
+      });
+      return saved;
     });
     return res.json({ success: true, data: updated });
   } catch (err: any) {
@@ -823,7 +844,7 @@ export const getAllOrdersAdmin = async (req: Request, res: Response) => {
 export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { orderStatus, status } = req.body;
+    const { orderStatus, status, paymentStatus } = req.body;
 
     const newOrderStatus = orderStatus || status;
 
@@ -836,11 +857,10 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy đơn hàng!' });
     }
 
-    let finalPaymentStatus = existingOrder.paymentStatus;
+    let finalPaymentStatus = paymentStatus || existingOrder.paymentStatus;
     // Đơn online vẫn chờ xác nhận tiền. Chỉ đơn COD hoàn tất mới tự chuyển PAID;
     // QR/online phải được cập nhật paymentStatus riêng sau khi kiểm tra giao dịch.
-    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
-    const isOnlinePayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((method) => rawMethod.includes(method));
+    const isOnlinePayment = isOnlinePaymentMethod(existingOrder.paymentMethod);
     if (newOrderStatus === 'COMPLETED' && !isOnlinePayment) {
       finalPaymentStatus = 'PAID';
     } else if (newOrderStatus && !isOnlinePayment) {
@@ -848,30 +868,50 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
     }
 
     const isCancelling = String(newOrderStatus || '').toUpperCase() === 'CANCELLED';
+    if (isCancelling) {
+      const cancelled = await releaseOrderStock(existingOrder.id, { reason: 'ADMIN_CANCELLED', req });
+      clearCachePattern('fogo_cache:*').catch(() => {});
+      return res.json({ success: true, message: 'Đã hủy đơn và hoàn tồn kho!', data: cancelled });
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
-      // Hoàn kho một lần duy nhất khi admin chuyển đơn sang trạng thái HỦY.
-      if (isCancelling && existingOrder.orderStatus !== 'CANCELLED') {
-        for (const item of existingOrder.items) {
-          if (item.variantId) {
-            await tx.productVariant.updateMany({
-              where: { id: item.variantId },
-              data: { stock: { increment: item.quantity } },
-            });
-          }
-        }
+      let saved;
+      if (finalPaymentStatus === 'PAID') {
+        const captured = await (tx as any).order.updateMany({
+          where: {
+            id: String(id),
+            stockReservationStatus: { not: 'RELEASED' },
+            OR: [{ stockReservedUntil: null }, { stockReservedUntil: { gt: new Date() } }],
+          },
+          data: {
+            orderStatus: newOrderStatus || (existingOrder.orderStatus === 'PENDING_PAYMENT' ? 'CONFIRMED' : existingOrder.orderStatus),
+            paymentStatus: 'PAID',
+            stockReservationStatus: 'COMMITTED',
+            stockReservedUntil: null,
+          },
+        });
+        if (captured.count !== 1) throw new Error('Phiên giữ hàng đã hết hạn hoặc tồn kho đã được hoàn; không thể xác nhận thanh toán.');
+        saved = await (tx as any).order.findUnique({ where: { id: String(id) }, include: { items: true } });
+      } else {
+        saved = await (tx as any).order.update({
+          where: { id: String(id) },
+          data: {
+            ...(newOrderStatus && { orderStatus: newOrderStatus }),
+            paymentStatus: finalPaymentStatus,
+          },
+          include: { items: true },
+        });
       }
-
-      return tx.order.update({
-        where: { id: String(id) },
-        data: {
-          ...(newOrderStatus && { orderStatus: newOrderStatus }),
-          paymentStatus: finalPaymentStatus,
-        },
-        include: { items: true },
+      await writeAuditLog(tx, req, {
+        action: 'ORDER_STATUS_UPDATED',
+        entityType: 'ORDER',
+        entityId: existingOrder.id,
+        before: { orderStatus: existingOrder.orderStatus, paymentStatus: existingOrder.paymentStatus },
+        after: { orderStatus: saved.orderStatus, paymentStatus: saved.paymentStatus },
+        metadata: { orderCode: existingOrder.orderCode },
       });
+      return saved;
     });
-
-    if (isCancelling) clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.json({
       success: true,

@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
+import { releaseExpiredStockReservations } from './services/stockReservationService';
 
 // Import Routes
 import authRoutes from './routes/authRoutes';
@@ -184,4 +185,12 @@ app.use('/api', contentRoutes);
 // ============================================================================
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`🚀 FoGo Store Server đang hoạt động tại cổng ${PORT} (0.0.0.0)`);
+  releaseExpiredStockReservations().catch((error) => console.error('Lỗi kiểm tra giữ kho khi khởi động:', error));
 });
+
+// Dọn các đơn QR quá hạn mỗi phút. updateMany trong service đảm bảo mỗi đơn
+// chỉ được nhận hoàn kho một lần, kể cả khi có nhiều instance backend.
+const stockReservationTimer = setInterval(() => {
+  releaseExpiredStockReservations().catch((error) => console.error('Lỗi tự động hoàn kho:', error));
+}, 60_000);
+stockReservationTimer.unref();

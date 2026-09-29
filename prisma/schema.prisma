@@ -129,6 +129,9 @@ model Order {
   paymentMethod   String      @default("COD")
   paymentStatus   String      @default("PENDING")
   orderStatus     String      @default("CONFIRMED")
+  stockReservationStatus String @default("COMMITTED")
+  stockReservedUntil DateTime?
+  stockReleasedAt DateTime?
   subTotal        Float
   discountAmount  Float       @default(0)
   shippingFee     Float       @default(0)
@@ -138,6 +141,8 @@ model Order {
   items           OrderItem[]
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
+
+  @@index([stockReservationStatus, stockReservedUntil])
 }
 
 
@@ -241,6 +246,26 @@ model PageView {
   @@index([createdAt])
   @@index([userId])
   @@index([userEmail])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  actorRole  String?
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId])
 }
 
 model SecurityLog {

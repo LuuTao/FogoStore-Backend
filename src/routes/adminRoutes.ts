@@ -49,6 +49,8 @@ import {
 } from '../controllers/productFaqController';
 import { getFlashSale, updateFlashSaleConfig, updateVariantFlashSale } from '../controllers/flashSaleController';
 import { getHomeLayout, updateHomeLayout } from '../controllers/homeLayoutController';
+import { listAuditLogs } from '../services/auditLogService';
+import { deleteOrder as deleteOrderWithStockRestore } from '../controllers/orderController';
 
 const router = Router();
 
@@ -105,16 +107,7 @@ router.get('/subcategories', getSubCategories);
 // Cập nhật trạng thái đơn (đặc biệt paymentStatus=PAID) bắt buộc có phiên admin.
 router.patch('/orders/:id/status', verifyAdmin, updateOrderStatusAdmin);
 router.put('/orders/:id/status', verifyAdmin, updateOrderStatusAdmin);
-router.delete('/orders/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await prisma.orderItem.deleteMany({ where: { orderId: id } });
-    await prisma.order.delete({ where: { id } });
-    return res.json({ success: true, message: 'Đã xóa đơn hàng thành công!' });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
+router.delete('/orders/:id', verifyAdmin, deleteOrderWithStockRestore);
 
 // ============================================================================
 // 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ
@@ -150,6 +143,7 @@ router.put('/flash-sale', updateFlashSaleConfig);
 router.patch('/variants/:id/flash-sale', updateVariantFlashSale);
 router.get('/home-layout', getHomeLayout);
 router.put('/home-layout', updateHomeLayout);
+router.get('/audit-logs', listAuditLogs);
 
 // Quản trị biến thể & sản phẩm
 router.put('/inventory/:id', updateVariant);

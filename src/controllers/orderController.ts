@@ -1,6 +1,12 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
+import {
+  getReservationExpiry,
+  isOnlinePaymentMethod,
+  releaseOrderStock,
+} from '../services/stockReservationService';
+import { writeAuditLog } from '../services/auditLogService';
 
 // ==========================================
 // 1. TẠO ĐƠN HÀNG (Trừ kho tự động & Xác nhận QR)
@@ -39,6 +45,8 @@ export const createOrder = async (req: Request, res: Response) => {
     const shippingFee = Number(body.shippingFee || 0);
     const discountAmount = Number(body.discountAmount || 0);
     const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
+    const paymentMethod = String(body.paymentMethod || 'COD');
+    const holdsStockTemporarily = isOnlinePaymentMethod(paymentMethod);
 
     // Nhận diện phương thức thanh toán
     // Tạo đơn online chỉ mới ghi nhận yêu cầu thanh toán. Không được đánh dấu
@@ -68,11 +76,15 @@ export const createOrder = async (req: Request, res: Response) => {
           throw new Error(`Sản phẩm "${item.name || variant.slug}" chỉ còn ${variant.stock} chiếc, không đủ số lượng bạn yêu cầu!`);
         }
 
-        // Trừ số lượng tồn kho của đúng biến thể khi đơn được tạo thành công.
-        await tx.productVariant.update({
-          where: { id: variant.id },
+        // Trừ tồn kho có điều kiện trong một câu lệnh nguyên tử. Nếu hai khách
+        // mua đồng thời, chỉ giao dịch đầu tiên còn đủ tồn mới thành công.
+        const stockUpdate = await tx.productVariant.updateMany({
+          where: { id: variant.id, stock: { gte: requestedQty } },
           data: { stock: { decrement: requestedQty } },
         });
+        if (stockUpdate.count !== 1) {
+          throw new Error(`Sản phẩm "${item.name || variant.slug}" vừa hết hoặc không còn đủ số lượng. Vui lòng chọn lại!`);
+        }
 
         formattedItems.push({
           variantId: variant.id,
@@ -86,7 +98,7 @@ export const createOrder = async (req: Request, res: Response) => {
       }
 
       // Tạo đơn hàng chính thức
-      return await tx.order.create({
+      const created = await (tx as any).order.create({
         data: {
           orderCode,
           userId: userId || undefined,
@@ -100,9 +112,11 @@ export const createOrder = async (req: Request, res: Response) => {
           address: body.address || body.specificAddress || '',
           storeAddress: body.storeAddress || '',
           note: body.note || '',
-          paymentMethod: body.paymentMethod || 'COD',
+          paymentMethod,
           paymentStatus: initialPaymentStatus,
-          orderStatus: 'CONFIRMED',
+          orderStatus: holdsStockTemporarily ? 'PENDING_PAYMENT' : 'CONFIRMED',
+          stockReservationStatus: holdsStockTemporarily ? 'HELD' : 'COMMITTED',
+          stockReservedUntil: holdsStockTemporarily ? getReservationExpiry() : null,
           subTotal,
           discountAmount,
           shippingFee,
@@ -115,6 +129,20 @@ export const createOrder = async (req: Request, res: Response) => {
         },
         include: { items: true },
       });
+      await writeAuditLog(tx, req, {
+        action: holdsStockTemporarily ? 'ORDER_CREATED_STOCK_HELD' : 'ORDER_CREATED_STOCK_COMMITTED',
+        entityType: 'ORDER',
+        entityId: created.id,
+        after: {
+          orderCode: created.orderCode,
+          orderStatus: created.orderStatus,
+          paymentStatus: created.paymentStatus,
+          stockReservationStatus: created.stockReservationStatus,
+          stockReservedUntil: created.stockReservedUntil,
+        },
+        metadata: { itemCount: formattedItems.length, totalAmount },
+      });
+      return created;
     });
 
     // Làm mới cache sản phẩm ngoài trang chủ để người xem thấy ngay tồn kho mới
@@ -143,7 +171,7 @@ export const getOrderByCode = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
     }
 
-    const order = await prisma.order.findFirst({
+    let order: any = await (prisma as any).order.findFirst({
       where: {
         OR: [
           { orderCode: String(orderCode) },
@@ -155,6 +183,15 @@ export const getOrderByCode = async (req: Request, res: Response) => {
 
     if (!order) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    }
+
+    if (
+      order.stockReservationStatus === 'HELD' &&
+      order.paymentStatus !== 'PAID' &&
+      order.stockReservedUntil &&
+      new Date(order.stockReservedUntil).getTime() <= Date.now()
+    ) {
+      order = await releaseOrderStock(order.id, { reason: 'PAYMENT_EXPIRED' });
     }
 
     return res.json({ success: true, data: order });
@@ -193,25 +230,7 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
       });
     }
 
-    // Hoàn lại số lượng tồn kho cho các biến thể trong đơn
-    const updated = await prisma.$transaction(async (tx) => {
-      for (const item of order.items) {
-        if (item.variantId) {
-          await tx.productVariant.update({
-            where: { id: item.variantId },
-            data: {
-              stock: { increment: item.quantity },
-            },
-          }).catch(() => {});
-        }
-      }
-
-      return await tx.order.update({
-        where: { id: order.id },
-        data: { orderStatus: 'CANCELLED' },
-        include: { items: true },
-      });
-    });
+    const updated = await releaseOrderStock(order.id, { reason: 'CUSTOMER_CANCELLED', req });
 
     clearCachePattern('fogo_cache:*').catch(() => {});
 
@@ -267,27 +286,47 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     }
 
     const isCancelling = String(orderStatus || '').toUpperCase() === 'CANCELLED';
+    if (isCancelling) {
+      const cancelled = await releaseOrderStock(existingOrder.id, { reason: 'ADMIN_CANCELLED', req });
+      clearCachePattern('fogo_cache:*').catch(() => {});
+      return res.json({ success: true, data: cancelled });
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
-      // Chỉ hoàn kho đúng một lần khi trạng thái chuyển sang HỦY.
-      if (isCancelling && existingOrder.orderStatus !== 'CANCELLED') {
-        for (const item of existingOrder.items) {
-          if (item.variantId) {
-            await tx.productVariant.updateMany({
-              where: { id: item.variantId },
-              data: { stock: { increment: item.quantity } },
-            });
-          }
-        }
+      let updatedOrder;
+      if (paymentStatus === 'PAID') {
+        const captured = await (tx as any).order.updateMany({
+          where: {
+            id: String(id),
+            stockReservationStatus: { not: 'RELEASED' },
+            OR: [{ stockReservedUntil: null }, { stockReservedUntil: { gt: new Date() } }],
+          },
+          data: {
+            ...dataToUpdate,
+            orderStatus: orderStatus || (existingOrder.orderStatus === 'PENDING_PAYMENT' ? 'CONFIRMED' : existingOrder.orderStatus),
+            stockReservationStatus: 'COMMITTED',
+            stockReservedUntil: null,
+          },
+        });
+        if (captured.count !== 1) throw new Error('Phiên giữ hàng đã hết hạn hoặc tồn kho đã được hoàn; không thể xác nhận thanh toán.');
+        updatedOrder = await (tx as any).order.findUnique({ where: { id: String(id) }, include: { items: true } });
+      } else {
+        updatedOrder = await (tx as any).order.update({
+          where: { id: String(id) },
+          data: dataToUpdate,
+          include: { items: true },
+        });
       }
-
-      return tx.order.update({
-        where: { id: String(id) },
-        data: dataToUpdate,
-        include: { items: true },
+      await writeAuditLog(tx, req, {
+        action: 'ORDER_STATUS_UPDATED',
+        entityType: 'ORDER',
+        entityId: existingOrder.id,
+        before: { orderStatus: existingOrder.orderStatus, paymentStatus: existingOrder.paymentStatus },
+        after: { orderStatus: updatedOrder.orderStatus, paymentStatus: updatedOrder.paymentStatus },
+        metadata: { orderCode: existingOrder.orderCode },
       });
+      return updatedOrder;
     });
-
-    if (isCancelling) clearCachePattern('fogo_cache:*').catch(() => {});
 
     return res.json({ success: true, data: updated });
   } catch (error: any) {
@@ -301,8 +340,21 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
 export const deleteOrder = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await prisma.orderItem.deleteMany({ where: { orderId: String(id) } });
-    await prisma.order.delete({ where: { id: String(id) } });
+    const existing = await (prisma as any).order.findUnique({ where: { id: String(id) }, include: { items: true } });
+    if (!existing) return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+    if (existing.stockReservationStatus !== 'RELEASED') {
+      await releaseOrderStock(existing.id, { reason: 'ADMIN_CANCELLED', req });
+    }
+    await prisma.$transaction(async (tx) => {
+      await writeAuditLog(tx, req, {
+        action: 'ORDER_DELETED',
+        entityType: 'ORDER',
+        entityId: existing.id,
+        before: { orderCode: existing.orderCode, orderStatus: existing.orderStatus, paymentStatus: existing.paymentStatus },
+      });
+      await tx.orderItem.deleteMany({ where: { orderId: String(id) } });
+      await tx.order.delete({ where: { id: String(id) } });
+    });
     return res.json({ success: true, message: 'Đã xóa đơn hàng' });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -319,12 +371,23 @@ export const deleteBulkOrders = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Danh sách ID đơn hàng không hợp lệ' });
     }
 
-    await prisma.orderItem.deleteMany({
-      where: { orderId: { in: ids } },
-    });
-
-    await prisma.order.deleteMany({
-      where: { id: { in: ids } },
+    const orders = await (prisma as any).order.findMany({ where: { id: { in: ids } }, include: { items: true } });
+    for (const order of orders) {
+      if (order.stockReservationStatus !== 'RELEASED') {
+        await releaseOrderStock(order.id, { reason: 'ADMIN_CANCELLED', req });
+      }
+    }
+    await prisma.$transaction(async (tx) => {
+      for (const order of orders) {
+        await writeAuditLog(tx, req, {
+          action: 'ORDER_DELETED',
+          entityType: 'ORDER',
+          entityId: order.id,
+          before: { orderCode: order.orderCode, orderStatus: order.orderStatus, paymentStatus: order.paymentStatus },
+        });
+      }
+      await tx.orderItem.deleteMany({ where: { orderId: { in: ids } } });
+      await tx.order.deleteMany({ where: { id: { in: ids } } });
     });
 
     return res.json({ success: true, message: `Đã xóa thành công ${ids.length} đơn hàng` });
