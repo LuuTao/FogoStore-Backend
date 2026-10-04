@@ -6,6 +6,12 @@ export const checkCache = (ttlSeconds = 600) => {
     if (req.method !== 'GET') return next();
 
     const cacheKey = `fogo_cache:${req.originalUrl}`;
+    const browserTtl = Math.min(ttlSeconds, 60);
+    const staleTtl = Math.max(30, Math.min(ttlSeconds * 2, 86400));
+
+    // Trình duyệt giữ bản ngắn; CDN/proxy giữ lâu hơn và có thể trả bản cũ trong lúc làm mới.
+    res.setHeader('Cache-Control', `public, max-age=${browserTtl}, s-maxage=${ttlSeconds}, stale-while-revalidate=${staleTtl}`);
+    res.setHeader('Vary', 'Origin, Accept-Encoding');
 
     try {
       const cachedData = await redis.get(cacheKey);
@@ -30,6 +36,7 @@ export const checkCache = (ttlSeconds = 600) => {
 
       next();
     } catch {
+      res.setHeader('X-Cache', 'BYPASS');
       next();
     }
   };

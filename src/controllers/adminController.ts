@@ -991,6 +991,7 @@ export const createBannersBulk = async (req: Request, res: Response) => {
         })
       )
     );
+    await clearCachePattern('fogo_cache:*banners*');
     return res.status(201).json({ success: true, data: created });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -1000,6 +1001,7 @@ export const createBannersBulk = async (req: Request, res: Response) => {
 export const deleteBanner = async (req: Request, res: Response) => {
   try {
     await prisma.banner.delete({ where: { id: req.params.id as string } });
+    await clearCachePattern('fogo_cache:*banners*');
     return res.json({ success: true, message: 'Đã xóa banner' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });

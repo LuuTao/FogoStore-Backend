@@ -3,6 +3,7 @@ import fs from 'fs';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import { prisma } from '../lib/prisma';
+import { clearCachePattern } from '../middlewares/cacheMiddleware';
 
 // ==========================================
 // BANNER MANAGEMENT
@@ -64,6 +65,7 @@ export const syncBanners = async (req: Request, res: Response) => {
         data: sanitizedItems,
       }),
     ]);
+    await clearCachePattern('fogo_cache:*banners*');
 
     const updated = await prisma.banner.findMany({ orderBy: { order: 'asc' } });
     return res.json({
@@ -120,6 +122,7 @@ export const createPost = async (req: Request, res: Response) => {
         relatedProductIds: normalizedRelatedProductIds,
       } as any,
     });
+    await clearCachePattern('fogo_cache:*posts*');
 
     return res.status(201).json({ success: true, data: newPost, message: 'Tạo bài viết thành công!' });
   } catch (error: any) {
@@ -146,6 +149,7 @@ export const updatePost = async (req: Request, res: Response) => {
         ...(normalizedRelatedProductIds !== undefined && { relatedProductIds: normalizedRelatedProductIds }),
       } as any,
     });
+    await clearCachePattern('fogo_cache:*posts*');
 
     return res.json({ success: true, data: updated, message: 'Cập nhật bài viết thành công!' });
   } catch (error: any) {
@@ -157,6 +161,7 @@ export const deletePost = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     await prisma.post.delete({ where: { id: String(id) } });
+    await clearCachePattern('fogo_cache:*posts*');
     return res.json({ success: true, message: 'Đã xóa bài viết thành công!' });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -173,6 +178,7 @@ export const deletePostsBulk = async (req: Request, res: Response) => {
     const result = await prisma.post.deleteMany({
       where: { id: { in: ids } },
     });
+    await clearCachePattern('fogo_cache:*posts*');
 
     return res.json({ success: true, message: `Đã xóa thành công ${result.count} bài viết!` });
   } catch (error: any) {
@@ -290,6 +296,7 @@ export const importPostsFromFile = async (req: any, res: Response) => {
     }
 
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    await clearCachePattern('fogo_cache:*posts*');
 
     return res.json({
       success: true,
