@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getAllProducts,
   filterProducts,
+  getHomeProducts,
   getProductBySlug,
   getCategories,
   deleteProductsBulk,
@@ -12,6 +13,7 @@ const router = Router();
 
 // 1. Các route tĩnh và bộ lọc (Cache 5 phút)
 router.get('/filter', checkCache(300), filterProducts);
+router.get('/home', checkCache(300), getHomeProducts);
 router.get('/categories', checkCache(3600), getCategories);
 router.post('/bulk-delete', deleteProductsBulk);
 

@@ -173,6 +173,85 @@ export const filterProducts = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// ============================================================================
+// 2.1 DỮ LIỆU GỌN CHO TRANG CHỦ
+// Chỉ trả về trường thực sự dùng trên thẻ sản phẩm để Home không phải tải cả
+// mô tả/thông số của mọi biến thể ngay lần đầu người dùng mở trang.
+// ============================================================================
+export const getHomeProducts = async (req: Request, res: Response) => {
+  try {
+    const category = String(req.query.category || '').trim().toLowerCase();
+    const whereClause: any = { name: { not: '' } };
+
+    if (category) {
+      whereClause.OR = [
+        { category: { slug: { contains: category, mode: 'insensitive' } } },
+        { category: { name: { contains: category, mode: 'insensitive' } } },
+        { name: { contains: category, mode: 'insensitive' } },
+      ];
+    }
+
+    const products = await prisma.product.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        specs: true,
+        isFeatured: true,
+        category: { select: { name: true, slug: true } },
+        variants: {
+          select: {
+            id: true,
+            slug: true,
+            storage: true,
+            color: true,
+            size: true,
+            version: true,
+            price: true,
+            originalPrice: true,
+            stock: true,
+            images: true,
+          },
+          orderBy: { price: 'asc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const cleanedProducts = products.map((product) => {
+      const savedSpecs = product.specs && typeof product.specs === 'object' && !Array.isArray(product.specs)
+        ? product.specs as Record<string, unknown>
+        : {};
+      const selectedStorages = new Set<string>();
+      const compactVariants = (product.variants || []).flatMap((variant) => {
+        // Giao diện Home chỉ lấy biến thể đầu tiên của mỗi dung lượng/cấu hình.
+        // Giữ đúng hành vi cũ nhưng không gửi các màu trùng lặp về trình duyệt.
+        const storageKey = String(variant.storage || '').trim().toLowerCase() || variant.id;
+        if (selectedStorages.has(storageKey)) return [];
+        selectedStorages.add(storageKey);
+
+        return [{
+          ...variant,
+          images: Array.isArray(variant.images) && variant.images[0] ? [variant.images[0]] : [],
+        }];
+      });
+
+      return {
+        ...product,
+        // Chỉ giữ tag hiển thị, không đưa mô tả/chính sách dài vào response Home.
+        specs: Array.isArray(savedSpecs.productTags) ? { productTags: savedSpecs.productTags } : undefined,
+        variants: compactVariants,
+      };
+    });
+
+    return res.json({ success: true, data: cleanedProducts });
+  } catch (error: any) {
+    console.error('Lỗi getHomeProducts:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
 // ============================================================================
 // 3. CHI TIẾT SẢN PHẨM THEO SLUG (TỰ ĐỘNG BÓC TÁCH CHUẨN XÁC BIẾN THỂ TỪ URL)
 // ============================================================================
