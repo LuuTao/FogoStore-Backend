@@ -76,8 +76,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// Cookie đăng nhập dùng SameSite=None trên production nên mọi request ghi dữ liệu
-// từ trình duyệt phải có Origin nằm trong allowlist để chống CSRF.
+// Mọi request ghi dữ liệu dùng cookie phải có Origin nằm trong allowlist để chống CSRF.
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const origin = req.headers.origin;

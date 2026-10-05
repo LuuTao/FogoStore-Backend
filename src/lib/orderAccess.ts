@@ -32,8 +32,8 @@ const orderCookieName = (orderCode: unknown) =>
 const orderCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: (process.env.NODE_ENV === 'production' ? 'none' : 'lax') as 'none' | 'lax',
-  partitioned: process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_PARTITIONED !== 'false',
+  sameSite: (process.env.AUTH_COOKIE_SAME_SITE === 'none' ? 'none' : 'lax') as 'none' | 'lax',
+  partitioned: process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_PARTITIONED === 'true',
   maxAge: 30 * 24 * 60 * 60 * 1000,
   path: '/api/orders',
 } as const);

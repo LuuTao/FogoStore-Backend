@@ -38,14 +38,14 @@ export const readCookie = (req: Request, name: string): string | null => {
 const sameSite = (): 'lax' | 'strict' | 'none' => {
   const configured = process.env.AUTH_COOKIE_SAME_SITE?.toLowerCase();
   if (configured === 'lax' || configured === 'strict' || configured === 'none') return configured;
-  return process.env.NODE_ENV === 'production' ? 'none' : 'lax';
+  return 'lax';
 };
 
 const cookieBase = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: sameSite(),
-  partitioned: process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_PARTITIONED !== 'false',
+  partitioned: process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_PARTITIONED === 'true',
   path: '/',
 } as const);
 
