@@ -1,12 +1,14 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { AuthenticatedRequest, requireAuth } from '../lib/authMiddleware';
 
 const router = Router();
+router.use(requireAuth);
 
 // 1. Lấy danh sách giỏ hàng của user
-router.get('/:userId', async (req: Request, res: Response) => {
+router.get('/:userId', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user!.id;
     
     // Truy vấn giỏ hàng từ Database thông qua Prisma
     const cartItems = await prisma.cartItem.findMany({
@@ -22,12 +24,22 @@ router.get('/:userId', async (req: Request, res: Response) => {
 });
 
 // 2. Thêm sản phẩm vào giỏ hàng
-router.post('/add', async (req: Request, res: Response) => {
+router.post('/add', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { userId, variantId, name, price, storage, color, imageUrl, quantity } = req.body;
+    const userId = req.user!.id;
+    const { variantId } = req.body;
+    const quantity = Number(req.body.quantity || 1);
 
-    if (!userId || !variantId) {
-      return res.status(400).json({ success: false, error: 'Thiếu thông tin userId hoặc variantId' });
+    if (!variantId || !Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
+      return res.status(400).json({ success: false, error: 'Sản phẩm hoặc số lượng không hợp lệ' });
+    }
+
+    const variant = await prisma.productVariant.findUnique({
+      where: { id: String(variantId) },
+      include: { product: true },
+    });
+    if (!variant || variant.stock < quantity) {
+      return res.status(400).json({ success: false, error: 'Sản phẩm không tồn tại hoặc không đủ tồn kho' });
     }
 
     // Kiểm tra xem sản phẩm (với đúng phân loại dung lượng/màu) đã có trong giỏ hàng chưa
@@ -35,17 +47,19 @@ router.post('/add', async (req: Request, res: Response) => {
       where: {
         userId: String(userId),
         variantId: String(variantId),
-        storage: storage || '',
-        color: color || '',
       },
     });
 
     let cartItem;
     if (existingItem) {
+      const nextQuantity = existingItem.quantity + quantity;
+      if (nextQuantity > 10 || nextQuantity > variant.stock) {
+        return res.status(400).json({ success: false, error: 'Số lượng vượt quá tồn kho hoặc giới hạn mỗi đơn' });
+      }
       // Nếu đã có thì cộng dồn số lượng
       cartItem = await prisma.cartItem.update({
         where: { id: existingItem.id },
-        data: { quantity: existingItem.quantity + (Number(quantity) || 1) },
+        data: { quantity: nextQuantity, price: variant.price },
       });
     } else {
       // Nếu chưa có thì tạo mới bản ghi
@@ -53,12 +67,12 @@ router.post('/add', async (req: Request, res: Response) => {
         data: {
           userId: String(userId),
           variantId: String(variantId),
-          name: name || 'Sản phẩm Apple',
-          price: Number(price) || 0,
-          storage: storage || '',
-          color: color || '',
-          imageUrl: imageUrl || '',
-          quantity: Number(quantity) || 1,
+          name: variant.product.name,
+          price: variant.price,
+          storage: variant.storage || '',
+          color: variant.color || '',
+          imageUrl: variant.images[0] || '',
+          quantity,
         },
       });
     }
@@ -71,16 +85,19 @@ router.post('/add', async (req: Request, res: Response) => {
 });
 
 // 3. Cập nhật số lượng sản phẩm trong giỏ hàng
-router.patch('/update-quantity', async (req: Request, res: Response) => {
+router.patch('/update-quantity', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { userId, variantId, storage, color, quantity } = req.body;
+    const userId = req.user!.id;
+    const { variantId } = req.body;
+    const quantity = Number(req.body.quantity);
+    if (!variantId || !Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
+      return res.status(400).json({ success: false, error: 'Số lượng không hợp lệ' });
+    }
 
     const existingItem = await prisma.cartItem.findFirst({
       where: {
         userId: String(userId),
         variantId: String(variantId),
-        storage: storage || '',
-        color: color || '',
       },
     });
 
@@ -88,9 +105,14 @@ router.patch('/update-quantity', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Không tìm thấy sản phẩm trong giỏ hàng' });
     }
 
+    const variant = await prisma.productVariant.findUnique({ where: { id: String(variantId) } });
+    if (!variant || quantity > variant.stock) {
+      return res.status(400).json({ success: false, error: 'Số lượng vượt quá tồn kho hiện tại' });
+    }
+
     const updated = await prisma.cartItem.update({
       where: { id: existingItem.id },
-      data: { quantity: Number(quantity) || 1 },
+      data: { quantity, price: variant.price },
     });
 
     return res.json({ success: true, data: updated });
@@ -101,16 +123,15 @@ router.patch('/update-quantity', async (req: Request, res: Response) => {
 });
 
 // 4. Xóa một sản phẩm khỏi giỏ hàng
-router.delete('/remove', async (req: Request, res: Response) => {
+router.delete('/remove', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { userId, variantId, storage, color } = req.body;
+    const userId = req.user!.id;
+    const { variantId } = req.body;
 
     const existingItem = await prisma.cartItem.findFirst({
       where: {
         userId: String(userId),
         variantId: String(variantId),
-        storage: storage || '',
-        color: color || '',
       },
     });
 
@@ -128,9 +149,9 @@ router.delete('/remove', async (req: Request, res: Response) => {
 });
 
 // 5. Xóa toàn bộ giỏ hàng của user
-router.delete('/clear/:userId', async (req: Request, res: Response) => {
+router.delete('/clear/:userId', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user!.id;
 
     await prisma.cartItem.deleteMany({
       where: { userId: String(userId) },

@@ -7,7 +7,7 @@ export const STOCK_RESERVATION_MINUTES = Math.max(5, Number(process.env.STOCK_RE
 
 export const isOnlinePaymentMethod = (paymentMethod?: string | null) => {
   const method = String(paymentMethod || '').toLowerCase();
-  return ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan', 'chuyển khoản'].some((item) => method.includes(item));
+  return ['vnpay-qr', 'momo', 'card', 'qr', 'bank', 'chuyenkhoan', 'chuyển khoản'].some((item) => method.includes(item));
 };
 
 export const getReservationExpiry = () => new Date(Date.now() + STOCK_RESERVATION_MINUTES * 60_000);

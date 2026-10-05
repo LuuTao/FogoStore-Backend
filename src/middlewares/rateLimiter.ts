@@ -1,17 +1,20 @@
 import { Request, Response, NextFunction } from 'express';
 import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
+import { sendSecurityAlert } from '../services/securityAlertService';
 
 interface RateLimitOptions {
   windowSeconds?: number;
   maxRequests?: number;
   freezeSeconds?: number;
+  eventType?: string;
 }
 
 export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
   const windowSeconds = options.windowSeconds || 60;
   const maxRequests = options.maxRequests || 5;
   const freezeSeconds = options.freezeSeconds || 150;
+  const eventType = options.eventType || 'BRUTE_FORCE';
 
   return async (req: Request, res: Response, next: NextFunction) => {
     const clientIp =
@@ -19,8 +22,9 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
       req.socket.remoteAddress ||
       'unknown_ip';
 
-    const freezeKey = `freeze:${clientIp}`;
-    const rateKey = `rate:${clientIp}:${Math.floor(Date.now() / (windowSeconds * 1000))}`;
+    const scope = eventType.toLowerCase();
+    const freezeKey = `freeze:${scope}:${clientIp}`;
+    const rateKey = `rate:${scope}:${clientIp}:${Math.floor(Date.now() / (windowSeconds * 1000))}`;
 
     try {
       const isFrozen = await redis.get(freezeKey);
@@ -49,7 +53,7 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
             method: req.method,
             path: req.originalUrl || req.path,
             threatLevel: 'HIGH',
-            eventType: 'BRUTE_FORCE',
+            eventType,
             payload: JSON.stringify({
               reason: `Spam vượt quá ${maxRequests} request/phút`,
               count: currentCount,
@@ -57,6 +61,14 @@ export const slidingWindowWithFreeze = (options: RateLimitOptions = {}) => {
             }),
             userAgent: req.headers['user-agent'] || 'Unknown Agent',
           },
+        }).catch(() => {});
+        sendSecurityAlert({
+          ip: clientIp,
+          method: req.method,
+          path: req.originalUrl || req.path,
+          threatLevel: 'HIGH',
+          eventType,
+          userAgent: req.headers['user-agent'],
         }).catch(() => {});
 
         return res.status(429).json({

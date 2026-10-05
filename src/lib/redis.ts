@@ -1,8 +1,14 @@
 import { Redis } from '@upstash/redis';
 
+const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+if (!redisUrl || !redisToken) {
+  throw new Error('Thiếu UPSTASH_REDIS_REST_URL hoặc UPSTASH_REDIS_REST_TOKEN.');
+}
+
 export const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || 'https://living-viper-297223.upstash.io',
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || 'gQAAAAAABIkHAAIgcDIxMmI0MWRmYWM4Y2M0NWEwYjE4YmM1YTFjNTM1ZTI5NA',
+  url: redisUrl,
+  token: redisToken,
 });
 
 // Tự động test kết nối và đo độ trễ khi khởi động

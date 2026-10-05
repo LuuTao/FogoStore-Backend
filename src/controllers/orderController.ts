@@ -7,15 +7,31 @@ import {
   releaseOrderStock,
 } from '../services/stockReservationService';
 import { writeAuditLog } from '../services/auditLogService';
+import type { AuthenticatedRequest } from '../lib/authMiddleware';
+import {
+  canAccessOrder,
+  createOrderAccessToken,
+  hashOrderAccessToken,
+  rejectOrderAccess,
+  setOrderAccessCookie,
+} from '../lib/orderAccess';
+import crypto from 'crypto';
+import { getMembershipStats } from '../services/membershipService';
+
+const hideOrderAccessHash = (order: any) => {
+  if (!order) return order;
+  const { accessTokenHash: _hiddenAccessTokenHash, ...safeOrder } = order;
+  return safeOrder;
+};
 
 // ==========================================
 // 1. TẠO ĐƠN HÀNG (Trừ kho tự động & Xác nhận QR)
 // ==========================================
-export const createOrder = async (req: Request, res: Response) => {
+export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = req.body || {};
 
-    const userId = body.userId || (req as any).user?.id || null;
+    const userId = req.user?.id || null;
     const customerName = (body.customerName || body.fullName || body.name || body.buyerName || '').toString().trim();
     const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.tel || '').toString().trim();
     const customerEmail = (body.customerEmail || body.email || '').toString().trim() || null;
@@ -27,26 +43,52 @@ export const createOrder = async (req: Request, res: Response) => {
       : Array.isArray(body.products)
       ? body.products
       : [];
+    const couponCode = String(body.couponCode || '').trim().toUpperCase();
+    const allowedCouponCodes = new Set(['', 'FOGO100', 'VIPAPPLE']);
+    if (!allowedCouponCodes.has(couponCode)) {
+      return res.status(400).json({ success: false, error: 'Mã giảm giá không hợp lệ hoặc đã hết hiệu lực' });
+    }
+    if (couponCode === 'VIPAPPLE') {
+      if (!userId) {
+        return res.status(403).json({ success: false, error: 'Mã VIPAPPLE chỉ dành cho thành viên VIP đã đăng nhập' });
+      }
+      const membership = await getMembershipStats(userId);
+      if (membership.rank !== 'VIP') {
+        return res.status(403).json({ success: false, error: 'Tài khoản chưa đủ điều kiện thành viên VIP' });
+      }
+    }
 
-    if (!customerName) {
+    if (!customerName || customerName.length > 120) {
       return res.status(400).json({ success: false, error: 'Vui lòng nhập họ và tên người nhận' });
     }
 
-    if (!customerPhone) {
+    if (!/^(?:\+84|0)\d{9,10}$/.test(customerPhone.replace(/[\s.-]/g, ''))) {
       return res.status(400).json({ success: false, error: 'Vui lòng nhập số điện thoại người nhận' });
     }
 
-    if (rawItems.length === 0) {
+    if (rawItems.length === 0 || rawItems.length > 20) {
       return res.status(400).json({ success: false, error: 'Giỏ hàng của bạn đang trống, không thể tạo đơn' });
     }
 
-    const orderCode = `FG-${Math.floor(100000 + Math.random() * 900000)}`;
-    const subTotal = Number(body.subTotal || body.totalAmount || 0);
-    const shippingFee = Number(body.shippingFee || 0);
-    const discountAmount = Number(body.discountAmount || 0);
-    const totalAmount = Number(body.totalAmount || subTotal + shippingFee - discountAmount || 0);
-    const paymentMethod = String(body.paymentMethod || 'COD');
+    let orderCode = '';
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = `FG-${crypto.randomInt(10_000_000, 100_000_000)}`;
+      const exists = await prisma.order.findUnique({ where: { orderCode: candidate }, select: { id: true } });
+      if (!exists) {
+        orderCode = candidate;
+        break;
+      }
+    }
+    if (!orderCode) throw new Error('Không thể tạo mã đơn duy nhất. Vui lòng thử lại.');
+    const requestedPaymentMethod = String(body.paymentMethod || 'cod').toLowerCase();
+    const allowedPaymentMethods = new Set(['cod', 'vnpay-qr', 'momo', 'card']);
+    if (!allowedPaymentMethods.has(requestedPaymentMethod)) {
+      return res.status(400).json({ success: false, error: 'Phương thức thanh toán không hợp lệ' });
+    }
+    const paymentMethod = requestedPaymentMethod;
     const holdsStockTemporarily = isOnlinePaymentMethod(paymentMethod);
+    const orderAccessToken = createOrderAccessToken();
+    const accessTokenHash = hashOrderAccessToken(orderAccessToken);
 
     // Nhận diện phương thức thanh toán
     // Tạo đơn online chỉ mới ghi nhận yêu cầu thanh toán. Không được đánh dấu
@@ -57,6 +99,7 @@ export const createOrder = async (req: Request, res: Response) => {
     // Chạy trong Transaction: Vừa kiểm tra trừ tồn kho, vừa tạo đơn
     const newOrder = await prisma.$transaction(async (tx) => {
       const formattedItems = [];
+      let calculatedSubTotal = 0;
 
       for (const item of rawItems) {
         const rawVariantId = String(item.variantId || item.id || '');
@@ -66,12 +109,16 @@ export const createOrder = async (req: Request, res: Response) => {
 
         const variant = await tx.productVariant.findUnique({
           where: { id: rawVariantId },
+          include: { product: true },
         });
         if (!variant) {
           throw new Error('Sản phẩm trong giỏ đã thay đổi hoặc không còn tồn tại. Vui lòng tải lại trang.');
         }
 
-        const requestedQty = Math.max(1, Number(item.quantity || 1));
+        const requestedQty = Number(item.quantity || 1);
+        if (!Number.isInteger(requestedQty) || requestedQty < 1 || requestedQty > 10) {
+          throw new Error('Số lượng sản phẩm không hợp lệ.');
+        }
         if (variant.stock < requestedQty) {
           throw new Error(`Sản phẩm "${item.name || variant.slug}" chỉ còn ${variant.stock} chiếc, không đủ số lượng bạn yêu cầu!`);
         }
@@ -86,21 +133,32 @@ export const createOrder = async (req: Request, res: Response) => {
           throw new Error(`Sản phẩm "${item.name || variant.slug}" vừa hết hoặc không còn đủ số lượng. Vui lòng chọn lại!`);
         }
 
+        const unitPrice = Number(variant.price);
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          throw new Error('Giá sản phẩm trong hệ thống không hợp lệ. Vui lòng liên hệ cửa hàng.');
+        }
+        calculatedSubTotal += unitPrice * requestedQty;
         formattedItems.push({
           variantId: variant.id,
-          productName: String(item.name || item.productName || item.title || 'Sản phẩm Apple'),
-          storage: String(item.storage || item.version || 'Tiêu chuẩn'),
-          color: String(item.color || 'Mặc định'),
-          price: Number(item.price || 0),
+          productName: variant.product.name,
+          storage: variant.storage || 'Tiêu chuẩn',
+          color: variant.color || 'Mặc định',
+          price: unitPrice,
           quantity: requestedQty,
-          imageUrl: String(item.imageUrl || item.image || item.thumbnail || ''),
+          imageUrl: variant.images?.[0] || '',
         });
       }
+
+      const validDiscounts: Record<string, number> = { FOGO100: 100_000, VIPAPPLE: 500_000 };
+      const discountAmount = Math.min(validDiscounts[couponCode] || 0, calculatedSubTotal);
+      const shippingFee = 0;
+      const totalAmount = Math.max(0, calculatedSubTotal + shippingFee - discountAmount);
 
       // Tạo đơn hàng chính thức
       const created = await (tx as any).order.create({
         data: {
           orderCode,
+          accessTokenHash,
           userId: userId || undefined,
           customerName,
           customerPhone,
@@ -117,7 +175,7 @@ export const createOrder = async (req: Request, res: Response) => {
           orderStatus: holdsStockTemporarily ? 'PENDING_PAYMENT' : 'CONFIRMED',
           stockReservationStatus: holdsStockTemporarily ? 'HELD' : 'COMMITTED',
           stockReservedUntil: holdsStockTemporarily ? getReservationExpiry() : null,
-          subTotal,
+          subTotal: calculatedSubTotal,
           discountAmount,
           shippingFee,
           totalAmount,
@@ -147,11 +205,12 @@ export const createOrder = async (req: Request, res: Response) => {
 
     // Làm mới cache sản phẩm ngoài trang chủ để người xem thấy ngay tồn kho mới
     clearCachePattern('fogo_cache:*').catch(() => {});
+    if (!userId) setOrderAccessCookie(res, newOrder.orderCode, orderAccessToken);
 
     return res.status(201).json({
       success: true,
       message: 'Đặt hàng thành công!',
-      data: newOrder,
+      data: hideOrderAccessHash(newOrder),
     });
   } catch (error: any) {
     console.error('Lỗi khi tạo đơn hàng:', error);
@@ -162,7 +221,7 @@ export const createOrder = async (req: Request, res: Response) => {
 // ==========================================
 // 2. LẤY CHI TIẾT ĐƠN HÀNG THEO MÃ
 // ==========================================
-export const getOrderByCode = async (req: Request, res: Response) => {
+export const getOrderByCode = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const rawCode = req.params.orderCode;
     const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -182,7 +241,34 @@ export const getOrderByCode = async (req: Request, res: Response) => {
     });
 
     if (!order) {
-      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+      return rejectOrderAccess(res);
+    }
+
+    if (!canAccessOrder(req, order)) return rejectOrderAccess(res);
+
+    const suppliedHeaderToken = String(req.headers['x-order-token'] || '').trim();
+    if (suppliedHeaderToken && order.accessTokenHash) {
+      setOrderAccessCookie(res, order.orderCode, suppliedHeaderToken);
+    }
+
+    // Nâng cấp đơn cũ: sau khi khách xác minh đúng mã đơn + số điện thoại,
+    // cấp một token ngẫu nhiên để các lần mở sau không cần tiếp tục gửi SĐT.
+    let issuedOrderAccessToken: string | undefined;
+    if (!order.accessTokenHash && req.headers['x-order-phone']) {
+      const candidateToken = createOrderAccessToken();
+      const claimed = await (prisma as any).order.updateMany({
+        where: { id: order.id, accessTokenHash: null },
+        data: { accessTokenHash: hashOrderAccessToken(candidateToken) },
+      });
+      if (claimed.count === 1) issuedOrderAccessToken = candidateToken;
+      order = await (prisma as any).order.findUnique({
+        where: { id: order.id },
+        include: { items: true },
+      });
+    }
+
+    if (issuedOrderAccessToken) {
+      setOrderAccessCookie(res, order.orderCode, issuedOrderAccessToken);
     }
 
     if (
@@ -194,7 +280,12 @@ export const getOrderByCode = async (req: Request, res: Response) => {
       order = await releaseOrderStock(order.id, { reason: 'PAYMENT_EXPIRED' });
     }
 
-    return res.json({ success: true, data: order });
+    return res.json({
+      success: true,
+      data: {
+        ...hideOrderAccessHash(order),
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -203,7 +294,7 @@ export const getOrderByCode = async (req: Request, res: Response) => {
 // ==========================================
 // 3. KHÁCH HÀNG HỦY ĐƠN (Hoàn tồn kho tự động)
 // ==========================================
-export const cancelOrderCustomer = async (req: Request, res: Response) => {
+export const cancelOrderCustomer = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const rawCode = req.params.orderCode;
     const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -220,8 +311,10 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
     });
 
     if (!order) {
-      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng để hủy' });
+      return rejectOrderAccess(res);
     }
+
+    if (!canAccessOrder(req, order)) return rejectOrderAccess(res);
 
     if (['SHIPPING', 'COMPLETED', 'DELIVERED', 'CANCELLED'].includes(order.orderStatus)) {
       return res.status(400).json({
@@ -237,7 +330,7 @@ export const cancelOrderCustomer = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: 'Hủy đơn hàng thành công!',
-      data: updated,
+      data: hideOrderAccessHash(updated),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -253,7 +346,7 @@ export const getAllOrdersAdmin = async (req: Request, res: Response) => {
       include: { items: true },
       orderBy: { createdAt: 'desc' },
     });
-    return res.json({ success: true, data: orders });
+    return res.json({ success: true, data: orders.map(hideOrderAccessHash) });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -267,6 +360,15 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { orderStatus, paymentStatus } = req.body;
 
+    const allowedOrderStatuses = new Set(['PENDING_PAYMENT', 'CONFIRMED', 'PROCESSING', 'SHIPPING', 'COMPLETED', 'DELIVERED', 'CANCELLED']);
+    const allowedPaymentStatuses = new Set(['PENDING', 'UNPAID', 'PAID', 'EXPIRED', 'FAILED']);
+    if (orderStatus && !allowedOrderStatuses.has(String(orderStatus))) {
+      return res.status(400).json({ success: false, error: 'Trạng thái đơn hàng không hợp lệ' });
+    }
+    if (paymentStatus && !allowedPaymentStatuses.has(String(paymentStatus))) {
+      return res.status(400).json({ success: false, error: 'Trạng thái thanh toán không hợp lệ' });
+    }
+
     const dataToUpdate: any = {};
     if (orderStatus) dataToUpdate.orderStatus = orderStatus;
     if (paymentStatus) dataToUpdate.paymentStatus = paymentStatus;
@@ -278,8 +380,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     if (!existingOrder) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
     }
-    const rawMethod = (existingOrder.paymentMethod || '').toLowerCase();
-    const isOnlinePayment = ['vnpay-qr', 'momo', 'qr', 'bank', 'chuyenkhoan'].some((method) => rawMethod.includes(method));
+    const isOnlinePayment = isOnlinePaymentMethod(existingOrder.paymentMethod);
 
     if (orderStatus === 'COMPLETED' && !paymentStatus && !isOnlinePayment) {
       dataToUpdate.paymentStatus = 'PAID';
@@ -289,7 +390,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     if (isCancelling) {
       const cancelled = await releaseOrderStock(existingOrder.id, { reason: 'ADMIN_CANCELLED', req });
       clearCachePattern('fogo_cache:*').catch(() => {});
-      return res.json({ success: true, data: cancelled });
+      return res.json({ success: true, data: hideOrderAccessHash(cancelled) });
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -328,7 +429,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       return updatedOrder;
     });
 
-    return res.json({ success: true, data: updated });
+    return res.json({ success: true, data: hideOrderAccessHash(updated) });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -399,10 +500,9 @@ export const deleteBulkOrders = async (req: Request, res: Response) => {
 // ==========================================
 // 8. LẤY DANH SÁCH ĐƠN HÀNG THEO TÀI KHOẢN
 // ==========================================
-export const getMyOrders = async (req: Request, res: Response) => {
+export const getMyOrders = async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const rawUserId = req.query.userId || (req as any).user?.id;
-    const userId = Array.isArray(rawUserId) ? rawUserId[0] : rawUserId;
+    const userId = req.user?.id;
 
     if (!userId) {
       return res.status(400).json({ success: false, error: 'Thiếu ID người dùng' });
@@ -414,7 +514,7 @@ export const getMyOrders = async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    return res.json({ success: true, data: orders });
+    return res.json({ success: true, data: orders.map(hideOrderAccessHash) });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message || 'Lỗi lấy lịch sử đơn hàng' });
   }
@@ -423,7 +523,7 @@ export const getMyOrders = async (req: Request, res: Response) => {
 // ==========================================
 // 9. KHÁCH HÀNG CẬP NHẬT THÔNG TIN ĐƠN
 // ==========================================
-export const updateOrderCustomer = async (req: Request, res: Response) => {
+export const updateOrderCustomer = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const rawCode = req.params.orderCode;
     const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -440,11 +540,65 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
     });
 
     if (!order) {
-      return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+      return rejectOrderAccess(res);
     }
+
+    if (!canAccessOrder(req, order)) return rejectOrderAccess(res);
 
     if (order.orderStatus === 'CANCELLED') {
       return res.status(400).json({ success: false, error: 'Đơn hàng này đã bị hủy, không thể thay đổi!' });
+    }
+
+    const normalizedPaymentMethod = paymentMethod ? String(paymentMethod).toLowerCase() : undefined;
+    if (normalizedPaymentMethod && !['cod', 'vnpay-qr', 'momo', 'card'].includes(normalizedPaymentMethod)) {
+      return res.status(400).json({ success: false, error: 'Phương thức thanh toán không hợp lệ' });
+    }
+
+    if (customerName !== undefined && (!String(customerName).trim() || String(customerName).trim().length > 120)) {
+      return res.status(400).json({ success: false, error: 'Tên người nhận không hợp lệ' });
+    }
+    if (customerPhone !== undefined && !/^(?:\+84|0)\d{9,10}$/.test(String(customerPhone).replace(/[\s.-]/g, ''))) {
+      return res.status(400).json({ success: false, error: 'Số điện thoại người nhận không hợp lệ' });
+    }
+    if (address !== undefined && String(address).length > 500) {
+      return res.status(400).json({ success: false, error: 'Địa chỉ nhận hàng quá dài' });
+    }
+    if (note !== undefined && String(note).length > 1000) {
+      return res.status(400).json({ success: false, error: 'Ghi chú đơn hàng quá dài' });
+    }
+
+    const paymentUpdate: Record<string, unknown> = {};
+    if (normalizedPaymentMethod && normalizedPaymentMethod !== order.paymentMethod) {
+      if (order.paymentStatus === 'PAID') {
+        return res.status(400).json({ success: false, error: 'Đơn đã thanh toán nên không thể đổi phương thức thanh toán' });
+      }
+      if (order.stockReservationStatus === 'RELEASED') {
+        return res.status(400).json({ success: false, error: 'Phiên giữ hàng đã hết hạn. Vui lòng tạo đơn hàng mới.' });
+      }
+      if (
+        order.stockReservationStatus === 'HELD' &&
+        order.stockReservedUntil &&
+        order.stockReservedUntil.getTime() <= Date.now()
+      ) {
+        await releaseOrderStock(order.id, { reason: 'PAYMENT_EXPIRED', req });
+        clearCachePattern('fogo_cache:*').catch(() => {});
+        return res.status(400).json({ success: false, error: 'Phiên thanh toán đã hết hạn. Tồn kho đã được hoàn lại.' });
+      }
+
+      const wasOnline = isOnlinePaymentMethod(order.paymentMethod);
+      const willBeOnline = isOnlinePaymentMethod(normalizedPaymentMethod);
+      paymentUpdate.paymentMethod = normalizedPaymentMethod;
+      if (!wasOnline && willBeOnline) {
+        paymentUpdate.paymentStatus = 'PENDING';
+        paymentUpdate.orderStatus = 'PENDING_PAYMENT';
+        paymentUpdate.stockReservationStatus = 'HELD';
+        paymentUpdate.stockReservedUntil = getReservationExpiry();
+      } else if (wasOnline && !willBeOnline) {
+        paymentUpdate.paymentStatus = 'PENDING';
+        paymentUpdate.orderStatus = 'CONFIRMED';
+        paymentUpdate.stockReservationStatus = 'COMMITTED';
+        paymentUpdate.stockReservedUntil = null;
+      }
     }
 
     const updated = await prisma.order.update({
@@ -454,7 +608,7 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
         ...(customerPhone && { customerPhone: customerPhone.trim() }),
         ...(address !== undefined && { address: address.trim() }),
         ...(note !== undefined && { note: note.trim() }),
-        ...(paymentMethod && { paymentMethod }),
+        ...paymentUpdate,
       },
       include: { items: true },
     });
@@ -462,7 +616,7 @@ export const updateOrderCustomer = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: 'Cập nhật thông tin đơn hàng thành công!',
-      data: updated,
+      data: hideOrderAccessHash(updated),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });

@@ -4,6 +4,7 @@ import { getProductFaqs } from '../controllers/productFaqController';
 import { getFlashSale } from '../controllers/flashSaleController';
 import { getHomeLayout } from '../controllers/homeLayoutController';
 import { checkCache } from '../middlewares/cacheMiddleware';
+import { verifyAdmin } from '../lib/authMiddleware';
 
 const router = Router();
 
@@ -13,6 +14,6 @@ router.get('/banners', checkCache(120), getBanners);
 router.get('/product-faqs', checkCache(600), getProductFaqs);
 router.get('/flash-sale', checkCache(15), getFlashSale);
 router.get('/home-layout', checkCache(300), getHomeLayout);
-router.post('/banners/sync', syncBanners);
+router.post('/banners/sync', verifyAdmin, syncBanners);
 
 export default router;

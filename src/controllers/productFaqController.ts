@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { sanitizePlainText } from '../lib/sanitizeHtml';
 
 // Prisma client sẽ có model này sau khi chạy migrate/generate ở môi trường triển khai.
 const productFaq = (prisma as any).productFaq;
@@ -53,8 +54,8 @@ export const getProductFaqsAdmin = async (_req: Request, res: Response) => {
 
 export const createProductFaq = async (req: Request, res: Response) => {
   try {
-    const question = String(req.body.question || '').trim();
-    const answer = String(req.body.answer || '').trim();
+    const question = sanitizePlainText(req.body.question, 500);
+    const answer = sanitizePlainText(req.body.answer, 5000);
     if (!question || !answer) return res.status(400).json({ success: false, error: 'Vui lòng nhập câu hỏi và câu trả lời' });
 
     const lastFaq = await productFaq.findFirst({ orderBy: { order: 'desc' } });
@@ -72,8 +73,8 @@ export const updateProductFaq = async (req: Request, res: Response) => {
     const faq = await productFaq.update({
       where: { id: String(req.params.id) },
       data: {
-        ...(req.body.question !== undefined && { question: String(req.body.question).trim() }),
-        ...(req.body.answer !== undefined && { answer: String(req.body.answer).trim() }),
+        ...(req.body.question !== undefined && { question: sanitizePlainText(req.body.question, 500) }),
+        ...(req.body.answer !== undefined && { answer: sanitizePlainText(req.body.answer, 5000) }),
         ...(req.body.isActive !== undefined && { isActive: Boolean(req.body.isActive) }),
         ...(req.body.order !== undefined && { order: Number(req.body.order) }),
       },

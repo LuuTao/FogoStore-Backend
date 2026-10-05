@@ -1,11 +1,18 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import nodemailer from 'nodemailer';
 import { OAuth2Client } from 'google-auth-library';
+import {
+  clearAuthCookies,
+  issueAuthSession,
+  revokeAllUserSessions,
+  revokeCurrentSession,
+  rotateAuthSession,
+} from '../lib/authSession';
+import { getMembershipStats } from '../services/membershipService';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fogo_secret_jwt_key_2026';
 const GOOGLE_CLIENT_ID =
   process.env.GOOGLE_CLIENT_ID ||
   process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
@@ -24,37 +31,16 @@ const transporter = nodemailer.createTransport({
 const emailOtpStore = new Map<string, { otp: string; userData: any; expiresAt: number }>();
 const zaloOtpStore = new Map<string, { otp: string; userData: any; expiresAt: number }>();
 
-/**
- * Tính toán Rank thành viên dựa trên tổng số món đã mua thành công
- * >= 4 món: VIP
- * >= 1 món: LOYAL (Thân Thiết)
- * 0 món: MEMBER (Thành Viên tiêu chuẩn)
- */
-const calculateUserRank = async (userId: string) => {
-  const completedOrders = await prisma.order.findMany({
-    where: {
-      userId,
-      orderStatus: {
-        in: ['DELIVERED', 'COMPLETED', 'CONFIRMED'],
-      },
-    },
-    include: {
-      items: true,
-    },
-  });
+const otpCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of emailOtpStore) if (record.expiresAt <= now) emailOtpStore.delete(key);
+  for (const [key, record] of zaloOtpStore) if (record.expiresAt <= now) zaloOtpStore.delete(key);
+}, 60_000);
+otpCleanupTimer.unref();
 
-  const totalItemsPurchased = completedOrders.reduce((acc, order) => {
-    return acc + (order.items?.reduce((sum, item) => sum + (item.quantity || 1), 0) || 0);
-  }, 0);
-
-  let rank: 'VIP' | 'LOYAL' | 'MEMBER' = 'MEMBER';
-  if (totalItemsPurchased >= 4) {
-    rank = 'VIP';
-  } else if (totalItemsPurchased >= 1) {
-    rank = 'LOYAL';
-  }
-
-  return { totalItemsPurchased, rank };
+const publicUser = (user: any) => {
+  const { password: _password, ...safeUser } = user;
+  return safeUser;
 };
 
 // ==========================================
@@ -89,16 +75,15 @@ export const sendEmailOtp = async (req: Request, res: Response) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
+    const passwordHash = await bcrypt.hash(password, 12);
 
     emailOtpStore.set(emailClean, {
       otp,
-      userData: { email: emailClean, phone: phoneClean, fullName, password },
+      userData: { email: emailClean, phone: phoneClean, fullName, passwordHash },
       expiresAt,
     });
-
-    console.log(`\n📧 [GMAIL OTP] ${emailClean} -> MÃ OTP: >>> ${otp} <<<\n`);
 
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       await transporter.sendMail({
@@ -145,33 +130,27 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Mã OTP không chính xác hoặc đã hết hạn' });
     }
 
-    const { fullName, phone, password } = record.userData;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { fullName, phone, passwordHash } = record.userData;
 
     const user = await prisma.user.create({
       data: {
         email: emailClean,
         phone,
         fullName,
-        password: hashedPassword,
+        password: passwordHash,
         role: 'CUSTOMER',
       },
     });
 
     emailOtpStore.delete(emailClean);
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email, phone: user.phone, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    await issueAuthSession(user, req, res);
 
     return res.status(201).json({
       success: true,
       data: {
-        token,
         user: {
-          ...user,
+          ...publicUser(user),
           rank: 'MEMBER',
           totalItemsPurchased: 0,
         },
@@ -211,8 +190,8 @@ export const googleAuth = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      const randomPassword = await bcrypt.hash(`GG_${Date.now()}_${Math.random()}`, 10);
-      const uniquePhone = `GG_${Date.now().toString().slice(-6)}_${Math.floor(1000 + Math.random() * 9000)}`;
+      const randomPassword = await bcrypt.hash(crypto.randomBytes(48).toString('base64url'), 12);
+      const uniquePhone = `GG_${Date.now().toString().slice(-6)}_${crypto.randomInt(1000, 10000)}`;
 
       user = await prisma.user.create({
         data: {
@@ -225,20 +204,15 @@ export const googleAuth = async (req: Request, res: Response) => {
       });
     }
 
-    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+    const { totalItemsPurchased, rank } = await getMembershipStats(user.id);
 
-    const appToken = jwt.sign(
-      { id: user.id, email: user.email, phone: user.phone, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    await issueAuthSession(user, req, res);
 
     return res.json({
       success: true,
       data: {
-        token: appToken,
         user: {
-          ...user,
+          ...publicUser(user),
           totalItemsPurchased,
           rank,
         },
@@ -265,11 +239,11 @@ export const sendZaloOtp = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Số điện thoại này đã được đăng ký tài khoản' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
-    zaloOtpStore.set(phoneClean, { otp, userData: { phone: phoneClean, fullName, password }, expiresAt });
+    const passwordHash = await bcrypt.hash(password, 12);
+    zaloOtpStore.set(phoneClean, { otp, userData: { phone: phoneClean, fullName, passwordHash }, expiresAt });
 
-    console.log(`\n💬 [ZALO OTP] ${phoneClean} -> MÃ OTP: >>> ${otp} <<<\n`);
     return res.json({ success: true, message: `Mã OTP đã gửi về Zalo số ${phoneClean}` });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -286,20 +260,18 @@ export const verifyZaloOtp = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Mã OTP không chính xác hoặc đã hết hạn' });
     }
 
-    const { fullName, password } = record.userData;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { fullName, passwordHash } = record.userData;
     const user = await prisma.user.create({
-      data: { phone: phoneClean, fullName, password: hashedPassword, role: 'CUSTOMER' },
+      data: { phone: phoneClean, fullName, password: passwordHash, role: 'CUSTOMER' },
     });
 
     zaloOtpStore.delete(phoneClean);
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    await issueAuthSession(user, req, res);
     return res.status(201).json({
       success: true,
       data: {
-        token,
         user: {
-          ...user,
+          ...publicUser(user),
           rank: 'MEMBER',
           totalItemsPurchased: 0,
         },
@@ -314,6 +286,9 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { account, email, password } = req.body;
     const clean = (account || email)?.trim();
+    if (!clean || typeof password !== 'string' || password.length === 0) {
+      return res.status(400).json({ success: false, error: 'Vui lòng nhập tài khoản và mật khẩu' });
+    }
     const user = await prisma.user.findFirst({
       where: { OR: [{ phone: clean }, { email: clean }] },
     });
@@ -322,15 +297,14 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Tài khoản hoặc mật khẩu không chính xác' });
     }
 
-    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+    const { totalItemsPurchased, rank } = await getMembershipStats(user.id);
 
-    const token = jwt.sign({ id: user.id, phone: user.phone, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    await issueAuthSession(user, req, res);
     return res.json({
       success: true,
       data: {
-        token,
         user: {
-          ...user,
+          ...publicUser(user),
           totalItemsPurchased,
           rank,
         },
@@ -367,7 +341,7 @@ export const getMe = async (req: any, res: Response) => {
       return res.status(404).json({ success: false, error: 'Không tìm thấy thông tin người dùng' });
     }
 
-    const { totalItemsPurchased, rank } = await calculateUserRank(user.id);
+    const { totalItemsPurchased, rank } = await getMembershipStats(user.id);
 
     return res.json({
       success: true,
@@ -380,4 +354,31 @@ export const getMe = async (req: any, res: Response) => {
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
+};
+
+export const refreshSession = async (req: Request, res: Response) => {
+  try {
+    const user = await rotateAuthSession(req, res);
+    if (!user) {
+      clearAuthCookies(res);
+      return res.status(401).json({ success: false, error: 'Phiên làm mới không hợp lệ hoặc đã hết hạn' });
+    }
+    return res.json({ success: true });
+  } catch {
+    clearAuthCookies(res);
+    return res.status(401).json({ success: false, error: 'Không thể làm mới phiên đăng nhập' });
+  }
+};
+
+export const logout = async (req: Request, res: Response) => {
+  await revokeCurrentSession(req).catch(() => {});
+  clearAuthCookies(res);
+  return res.json({ success: true, message: 'Đã đăng xuất' });
+};
+
+export const logoutAllDevices = async (req: any, res: Response) => {
+  if (!req.user?.id) return res.status(401).json({ success: false, error: 'Chưa đăng nhập' });
+  await revokeAllUserSessions(req.user.id);
+  clearAuthCookies(res);
+  return res.json({ success: true, message: 'Đã đăng xuất khỏi tất cả thiết bị' });
 };

@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import { prisma } from '../lib/prisma';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
+import { sanitizePlainText, sanitizeRichHtml } from '../lib/sanitizeHtml';
 
 // ==========================================
 // BANNER MANAGEMENT
@@ -114,10 +115,10 @@ export const createPost = async (req: Request, res: Response) => {
 
     const newPost = await prisma.post.create({
       data: {
-        title,
+        title: sanitizePlainText(title, 250),
         slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
-        summary: summary || '',
-        content: content || '',
+        summary: sanitizePlainText(summary || '', 1000),
+        content: sanitizeRichHtml(content || ''),
         thumbnail: thumbnail || '',
         relatedProductIds: normalizedRelatedProductIds,
       } as any,
@@ -141,10 +142,10 @@ export const updatePost = async (req: Request, res: Response) => {
     const updated = await prisma.post.update({
       where: { id: String(id) },
       data: {
-        ...(title && { title }),
+        ...(title && { title: sanitizePlainText(title, 250) }),
         ...(slug && { slug }),
-        ...(summary !== undefined && { summary }),
-        ...(content !== undefined && { content }),
+        ...(summary !== undefined && { summary: sanitizePlainText(summary, 1000) }),
+        ...(content !== undefined && { content: sanitizeRichHtml(content) }),
         ...(thumbnail !== undefined && { thumbnail }),
         ...(normalizedRelatedProductIds !== undefined && { relatedProductIds: normalizedRelatedProductIds }),
       } as any,
@@ -202,7 +203,7 @@ export const importPostsFromFile = async (req: any, res: Response) => {
     // 1. FILE WORD (.DOCX)
     if (originalName.endsWith('.docx')) {
       const result = await mammoth.convertToHtml({ path: filePath });
-      const htmlContent = result.value;
+      const htmlContent = sanitizeRichHtml(result.value);
 
       const rawTitle = req.file.originalname.replace(/\.docx$/i, '').trim();
       const cleanSlug = rawTitle
@@ -275,15 +276,15 @@ export const importPostsFromFile = async (req: any, res: Response) => {
           where: { slug: cleanSlug },
           update: {
             title: String(title),
-            content: String(content),
-            summary: String(summary),
+            content: sanitizeRichHtml(content),
+            summary: sanitizePlainText(summary, 1000),
             thumbnail: String(thumbnail),
           },
           create: {
             title: String(title),
             slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
-            content: String(content),
-            summary: String(summary),
+            content: sanitizeRichHtml(content),
+            summary: sanitizePlainText(summary, 1000),
             thumbnail: String(thumbnail),
           },
         });

@@ -24,6 +24,24 @@ model User {
   createdAt DateTime   @default(now())
   cartItems CartItem[]
   pageViews PageView[]
+  authSessions AuthSession[]
+}
+
+model AuthSession {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime  @default(now())
+  ip               String?
+  userAgent        String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
 }
 
 model Category {
@@ -114,6 +132,7 @@ model HomeLayout {
 model Order {
   id              String      @id @default(uuid())
   orderCode       String      @unique
+  accessTokenHash String?     @unique
   userId          String?     // ID của người dùng đã đăng nhập
   user            User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
   customerName    String

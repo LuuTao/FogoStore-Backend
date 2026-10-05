@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { PRODUCT_TAGS } from '../lib/productTags';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
@@ -8,16 +7,7 @@ export function validateTags(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 4 && value.every(tag => PRODUCT_TAGS.includes(tag));
 }
 
-export function canEditProductTags(req: Request): boolean {
-  try {
-    const token = req.headers.authorization?.replace(/^Bearer /, '') || '';
-    const claims = jwt.verify(token, process.env.JWT_SECRET || 'fogo_secret_jwt_key_2026');
-    return typeof claims !== 'string' && claims.role === 'ADMIN';
-  } catch { return false; }
-}
-
 export async function updateProductTags(req: Request, res: Response) {
-  if (!canEditProductTags(req)) return res.status(403).json({ success: false, error: 'Vui lòng đăng nhập lại tài khoản quản trị' });
   const tags: unknown = req.body.tags;
   if (!validateTags(tags)) return res.status(400).json({ success: false, error: 'Tag không hợp lệ' });
   try {

@@ -1,12 +1,15 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { updateProductTags } from '../controllers/productTagsController';
 import jwt from 'jsonwebtoken';
 import { uploadFile, uploadMemory, uploadImage } from '../lib/multer';
-import { verifyAdmin } from '../lib/authMiddleware';
+import { getJwtSecret, JWT_AUDIENCE, JWT_ISSUER, verifyAdmin } from '../lib/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { deleteProductsBulk } from '../controllers/productController';
 import { slidingWindowWithFreeze } from '../middlewares/rateLimiter';
 import { fixSwappedAttributesInDB } from '../controllers/adminController';
+import { validateUploadedImages } from '../middlewares/validateUploadedImages';
+import { persistUploadedImages } from '../middlewares/persistUploadedImages';
 
 import {
   getInventory,
@@ -64,13 +67,23 @@ const adminActionLimiter = slidingWindowWithFreeze({
 // ============================================================================
 // 1. ROUTE CÔNG KHAI ADMIN: ĐỌC DỮ LIỆU & AUTH LỚP 2
 // ============================================================================
-router.post('/security-auth', adminActionLimiter, async (req, res) => {
+const safeEqual = (left: string, right: string) => {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
+router.post('/security-auth', adminActionLimiter, verifyAdmin, async (req, res) => {
   try {
     const { email, password } = req.body;
-    const targetEmail = process.env.SECURITY_LOG_EMAIL || 'tao6a3lt@gmail.com';
-    const targetPass = process.env.SECURITY_LOG_PASSWORD || 'Tao30092004@';
+    const targetEmail = process.env.SECURITY_LOG_EMAIL;
+    const targetPass = process.env.SECURITY_LOG_PASSWORD;
 
-    if (email !== targetEmail || password !== targetPass) {
+    if (!targetEmail || !targetPass) {
+      return res.status(503).json({ success: false, message: 'Lớp bảo mật chưa được cấu hình trên máy chủ.' });
+    }
+
+    if (!safeEqual(String(email || ''), targetEmail) || !safeEqual(String(password || ''), targetPass)) {
       return res.status(401).json({
         success: false,
         message: 'Tài khoản hoặc mật khẩu lớp 2 không chính xác!',
@@ -79,8 +92,13 @@ router.post('/security-auth', adminActionLimiter, async (req, res) => {
 
     const securityToken = jwt.sign(
       { email, scope: 'SECURITY_LOG_ACCESS' },
-      process.env.JWT_SECRET || 'fogo_secret_key',
-      { expiresIn: '2h' }
+      getJwtSecret(),
+      {
+        algorithm: 'HS256',
+        expiresIn: '2h',
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+      }
     );
 
     return res.json({
@@ -93,7 +111,10 @@ router.post('/security-auth', adminActionLimiter, async (req, res) => {
   }
 });
 
-// Các route đọc dữ liệu bảng điều khiển (Không chặn token để tránh trắng trang)
+// Mọi route trong /api/admin từ đây trở xuống đều bắt buộc là ADMIN hợp lệ.
+router.use(verifyAdmin);
+
+// Các route đọc dữ liệu bảng điều khiển
 router.get('/inventory', getInventory);
 router.get('/orders', getAllOrdersAdmin);
 router.get('/customers', getCustomers);
@@ -110,18 +131,17 @@ router.put('/orders/:id/status', verifyAdmin, updateOrderStatusAdmin);
 router.delete('/orders/:id', verifyAdmin, deleteOrderWithStockRestore);
 
 // ============================================================================
-// 2. KÍCH HOẠT verifyAdmin BẢO VỆ CÁC THAO TÁC QUẢN TRỊ
+// 2. CÁC THAO TÁC QUẢN TRỊ
 // ============================================================================
-router.use(verifyAdmin);
 router.put('/products/:id/tags', updateProductTags);
 
 // Quản trị bài viết CMS (Thêm, Sửa, Xóa, Xóa hàng loạt, Import Excel/Word)
-router.post('/upload-image', uploadImage.single('image'), (req: any, res) => {
+router.post('/upload-image', uploadImage.single('image'), validateUploadedImages, persistUploadedImages, (req: any, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'Chưa có file ảnh được tải lên!' });
     }
-    const imageUrl = `/uploads/${req.file.filename}`;
+    const imageUrl = req.file.publicUrl || `/uploads/${req.file.filename}`;
     return res.json({ success: true, imageUrl, message: 'Tải ảnh lên thành công!' });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
@@ -149,10 +169,10 @@ router.get('/audit-logs', listAuditLogs);
 router.put('/inventory/:id', updateVariant);
 router.put('/products/specifications', updateProductsSpecifications);
 router.delete('/inventory/:id', deleteVariant);
-router.post('/products/full', uploadImage.array('images', 8), createFullProduct);
+router.post('/products/full', uploadImage.array('images', 8), validateUploadedImages, createFullProduct);
 router.delete('/products/:id', deleteProduct);
-router.post('/variants', uploadImage.single('image'), addVariant);
-router.put('/variants/:id', uploadImage.array('images', 8), updateVariant);
+router.post('/variants', uploadImage.single('image'), validateUploadedImages, addVariant);
+router.put('/variants/:id', uploadImage.array('images', 8), validateUploadedImages, updateVariant);
 router.patch('/variants/:variantId', patchVariant);
 router.delete('/variants/:variantId', deleteVariant);
 
@@ -161,7 +181,6 @@ router.post('/products/import-excel', adminActionLimiter, uploadMemory.single('f
 router.post('/products/bulk-delete', adminActionLimiter, deleteProductsBulk);
 
 // Danh mục & SubCategory
-router.get('/categories/cleanup', cleanupCategories);
 router.delete('/categories/cleanup', cleanupCategories);
 router.post('/subcategories', upsertSubCategory);
 router.delete('/subcategories/:id', deleteSubCategory);
@@ -184,7 +203,11 @@ const verifySecurityScope = (req: any, res: any, next: any) => {
   }
 
   try {
-    const decoded: any = jwt.verify(secHeader, process.env.JWT_SECRET || 'fogo_secret_key');
+    const decoded: any = jwt.verify(secHeader, getJwtSecret(), {
+      algorithms: ['HS256'],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
     if (decoded.scope !== 'SECURITY_LOG_ACCESS') {
       return res.status(403).json({ success: false, message: 'Quyền truy cập không hợp lệ!' });
     }
@@ -224,6 +247,6 @@ router.delete('/security-logs', verifySecurityScope, async (req, res) => {
   }
 });
 
-router.get('/admin/fix-swapped-attributes', fixSwappedAttributesInDB);
+router.post('/maintenance/fix-swapped-attributes', adminActionLimiter, fixSwappedAttributesInDB);
 
 export default router;

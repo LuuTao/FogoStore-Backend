@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
+import { sendSecurityAlert } from '../services/securityAlertService';
 
 // Mẫu Regex nhận diện các mẫu payload tấn công
-const SQLI_PATTERNS = /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|ALTER|CREATE|EXEC)\b)|(['"]\s*(OR|AND)\s*['"]?\d+['"]?\s*=\s*['"]?\d+)|(--|#|\/\*)/i;
+const SQLI_PATTERNS = /(\bUNION\s+(ALL\s+)?SELECT\b)|(\bDROP\s+(TABLE|DATABASE)\b)|(['"]\s*(OR|AND)\s+['"]?\d+['"]?\s*=\s*['"]?\d+)|(\/\*.*\*\/)|(\bSLEEP\s*\()|(\bBENCHMARK\s*\()/i;
 const XSS_PATTERNS = /(<script\b[^>]*>([\s\S]*?)<\/script>)|(<img\b[^>]*\bonerror\b)|(javascript:)|(onerror\s*=)|(onload\s*=)|(<iframe)/i;
 const PATH_TRAVERSAL_PATTERNS = /(\.\.\/|\.\.\\|\/\.env|\/etc\/passwd|\/proc\/|wp-admin|wp-login|\.git)/i;
 
@@ -12,10 +13,21 @@ export const securityAudit = async (req: Request, res: Response, next: NextFunct
   const path = req.originalUrl || req.url;
   const method = req.method;
 
-  const rawPayload = JSON.stringify({
+  const inspectedPayload = JSON.stringify({
     query: req.query,
     params: req.params,
     body: req.body,
+  });
+  const safePayload = JSON.stringify({
+    query: req.query,
+    params: req.params,
+    body: req.body && typeof req.body === 'object'
+      ? Object.fromEntries(
+          Object.entries(req.body).map(([key, value]) =>
+            /password|token|otp|secret|authorization/i.test(key) ? [key, '[REDACTED]'] : [key, value]
+          )
+        )
+      : undefined,
   });
 
   let detectedThreat: { type: string; level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' } | null = null;
@@ -25,11 +37,11 @@ export const securityAudit = async (req: Request, res: Response, next: NextFunct
     detectedThreat = { type: 'PATH_TRAVERSAL_SCAN', level: 'HIGH' };
   }
   // 2. Quét mẫu SQL Injection trong URL hoặc Payload
-  else if (SQLI_PATTERNS.test(rawPayload) || SQLI_PATTERNS.test(path)) {
+  else if (SQLI_PATTERNS.test(path) || (!path.startsWith('/api/admin/') && SQLI_PATTERNS.test(inspectedPayload))) {
     detectedThreat = { type: 'SQL_INJECTION_ATTEMPT', level: 'CRITICAL' };
   }
   // 3. Quét mã độc XSS
-  else if (XSS_PATTERNS.test(rawPayload)) {
+  else if (!path.startsWith('/api/admin/') && XSS_PATTERNS.test(inspectedPayload)) {
     detectedThreat = { type: 'XSS_ATTEMPT', level: 'HIGH' };
   }
 
@@ -45,10 +57,18 @@ export const securityAudit = async (req: Request, res: Response, next: NextFunct
         path,
         threatLevel: detectedThreat.level,
         eventType: detectedThreat.type,
-        payload: rawPayload.slice(0, 2000), // Cắt ngắn để tối ưu bộ nhớ
+        payload: safePayload.slice(0, 2000),
         userAgent,
       }
     }).catch(err => console.error('Lỗi lưu log bảo mật:', err));
+    sendSecurityAlert({
+      ip,
+      method,
+      path,
+      threatLevel: detectedThreat.level,
+      eventType: detectedThreat.type,
+      userAgent,
+    }).catch(() => {});
 
     return res.status(403).json({
       success: false,

@@ -11,7 +11,7 @@ import {
   deleteBulkOrders
 } from '../controllers/orderController';
 import { slidingWindowWithFreeze } from '../middlewares/rateLimiter';
-import { verifyAdmin } from '../lib/authMiddleware';
+import { optionalAuth, requireAuth, verifyAdmin } from '../lib/authMiddleware';
 
 const router = Router();
 
@@ -20,23 +20,32 @@ const orderCheckoutLimiter = slidingWindowWithFreeze({
   windowSeconds: 60,
   maxRequests: 5,
   freezeSeconds: 150,
+  eventType: 'SUSPICIOUS_ORDER_CREATION',
+});
+
+// Cho phép polling QR nhưng hạn chế việc dò hàng loạt mã đơn.
+const orderAccessLimiter = slidingWindowWithFreeze({
+  windowSeconds: 60,
+  maxRequests: 60,
+  freezeSeconds: 150,
+  eventType: 'ORDER_ENUMERATION_ATTEMPT',
 });
 
 // ==========================================
 // 1. ROUTE DÀNH CHO KHÁCH HÀNG & GUEST
 // ==========================================
-router.post('/', orderCheckoutLimiter, createOrder);
-router.get('/my-orders', getMyOrders);
+router.post('/', orderCheckoutLimiter, optionalAuth, createOrder);
+router.get('/my-orders', requireAuth, getMyOrders);
 // Endpoint polling trạng thái thanh toán của màn hình QR.
-router.get('/:orderCode/status', getOrderByCode);
-router.get('/:orderCode', getOrderByCode);
-router.patch('/:orderCode/cancel', cancelOrderCustomer);
-router.patch('/:orderCode/update', updateOrderCustomer);
+router.get('/:orderCode/status', orderAccessLimiter, optionalAuth, getOrderByCode);
+router.get('/:orderCode', orderAccessLimiter, optionalAuth, getOrderByCode);
+router.patch('/:orderCode/cancel', orderAccessLimiter, optionalAuth, cancelOrderCustomer);
+router.patch('/:orderCode/update', orderAccessLimiter, optionalAuth, updateOrderCustomer);
 
 // ==========================================
 // 2. ROUTE QUẢN TRỊ VIÊN (ADMIN)
 // ==========================================
-router.get('/admin/orders', getAllOrdersAdmin);
+router.get('/admin/orders', verifyAdmin, getAllOrdersAdmin);
 router.patch('/admin/orders/:id/status', verifyAdmin, updateOrderStatus);
 router.post('/admin/orders/bulk-delete', verifyAdmin, deleteBulkOrders);
 router.delete('/admin/orders/:id', verifyAdmin, deleteOrder);

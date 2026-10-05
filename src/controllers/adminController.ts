@@ -2,10 +2,17 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
-import { validateTags, canEditProductTags } from './productTagsController';
+import { validateTags } from './productTagsController';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 import { releaseOrderStock, isOnlinePaymentMethod } from '../services/stockReservationService';
 import { writeAuditLog } from '../services/auditLogService';
+import { sanitizeJsonStrings, sanitizeRichHtml } from '../lib/sanitizeHtml';
+
+const hideOrderAccessHash = (order: any) => {
+  if (!order) return order;
+  const { accessTokenHash: _hiddenAccessTokenHash, ...safeOrder } = order;
+  return safeOrder;
+};
 
 // ==========================================
 // 1. LẤY TỒN KHO & BIẾN THỂ SẢN PHẨM
@@ -62,7 +69,7 @@ export const createFullProduct = async (req: Request, res: Response) => {
       data: {
         name,
         slug: `${cleanSlug}-${Date.now().toString().slice(-4)}`,
-        description: description || `Mô tả chính hãng của ${name}`,
+        description: sanitizeRichHtml(description || `Mô tả chính hãng của ${name}`),
         categoryId: cat.id,
         isFeatured: Boolean(isFeatured),
         isFlashSale: false,
@@ -124,9 +131,11 @@ export const updateProductsSpecifications = async (req: Request, res: Response) 
       return res.status(400).json({ success: false, error: 'Vui lòng chọn ít nhất một sản phẩm' });
     }
 
-    const description = String(req.body.description || '');
-    const salesPolicy = String(req.body.salesPolicy || '');
-    const specifications = Array.isArray(req.body.specifications) ? req.body.specifications : [];
+    const description = sanitizeRichHtml(req.body.description || '');
+    const salesPolicy = sanitizeRichHtml(req.body.salesPolicy || '');
+    const specifications = Array.isArray(req.body.specifications)
+      ? sanitizeJsonStrings(req.body.specifications)
+      : [];
     const selectedProducts = await prisma.product.findMany({
       where: { id: { in: productIds } },
       select: { id: true, specs: true },
@@ -140,7 +149,7 @@ export const updateProductsSpecifications = async (req: Request, res: Response) 
         where: { id: product.id },
         data: {
           description,
-          specs: { ...previousSpecs, salesPolicy, specifications },
+          specs: { ...previousSpecs, salesPolicy, specifications } as any,
         },
       });
     }));
@@ -220,9 +229,6 @@ export const addVariant = async (req: Request, res: Response) => {
 // ==========================================
 export const updateVariant = async (req: Request, res: Response) => {
   try {
-    if (req.body.tags !== undefined && !canEditProductTags(req)) {
-      return res.status(403).json({ success: false, error: 'Vui lòng đăng nhập lại tài khoản quản trị' });
-    }
     if (req.body.tags !== undefined && !validateTags(req.body.tags)) {
       return res.status(400).json({ success: false, error: 'Tag không hợp lệ' });
     }
@@ -520,7 +526,7 @@ export const importExcel = async (req: any, res: Response) => {
           productName: cleanProductName,
           parentSlug: parentSlug,
           categoryName: finalCategoryName,
-          description: rawDescription || `Sản phẩm chính hãng ${cleanProductName} tại FoGo Store`,
+          description: sanitizeRichHtml(rawDescription || `Sản phẩm chính hãng ${cleanProductName} tại FoGo Store`),
           variants: [],
         });
       }
@@ -835,7 +841,7 @@ export const getAllOrdersAdmin = async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    return res.json({ success: true, data: orders });
+    return res.json({ success: true, data: orders.map(hideOrderAccessHash) });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -847,6 +853,14 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
     const { orderStatus, status, paymentStatus } = req.body;
 
     const newOrderStatus = orderStatus || status;
+    const allowedOrderStatuses = new Set(['PENDING_PAYMENT', 'CONFIRMED', 'PROCESSING', 'SHIPPING', 'COMPLETED', 'DELIVERED', 'CANCELLED']);
+    const allowedPaymentStatuses = new Set(['PENDING', 'UNPAID', 'PAID', 'EXPIRED', 'FAILED']);
+    if (newOrderStatus && !allowedOrderStatuses.has(String(newOrderStatus))) {
+      return res.status(400).json({ success: false, message: 'Trạng thái đơn hàng không hợp lệ' });
+    }
+    if (paymentStatus && !allowedPaymentStatuses.has(String(paymentStatus))) {
+      return res.status(400).json({ success: false, message: 'Trạng thái thanh toán không hợp lệ' });
+    }
 
     const existingOrder = await prisma.order.findUnique({
       where: { id: String(id) },
@@ -871,7 +885,7 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
     if (isCancelling) {
       const cancelled = await releaseOrderStock(existingOrder.id, { reason: 'ADMIN_CANCELLED', req });
       clearCachePattern('fogo_cache:*').catch(() => {});
-      return res.json({ success: true, message: 'Đã hủy đơn và hoàn tồn kho!', data: cancelled });
+      return res.json({ success: true, message: 'Đã hủy đơn và hoàn tồn kho!', data: hideOrderAccessHash(cancelled) });
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -916,7 +930,7 @@ export const updateOrderStatusAdmin = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: 'Cập nhật trạng thái đơn hàng thành công!',
-      data: updated,
+      data: hideOrderAccessHash(updated),
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -959,8 +973,8 @@ export const importHaravanPosts = async (req: any, res: Response) => {
 
       await prisma.post.upsert({
         where: { slug: cleanSlug },
-        update: { title, content: content || '', summary, thumbnail },
-        create: { title, slug: cleanSlug, content: content || '', summary, thumbnail },
+        update: { title, content: sanitizeRichHtml(content || ''), summary, thumbnail },
+        create: { title, slug: cleanSlug, content: sanitizeRichHtml(content || ''), summary, thumbnail },
       });
       count++;
     }
