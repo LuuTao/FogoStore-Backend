@@ -68,6 +68,8 @@ const corsOptions: cors.CorsOptions = {
     'Expires',
     'x-security-token',
     'x-order-token',
+    // Tạm giữ để frontend phiên bản cũ không lỗi CORS trong lúc triển khai.
+    // Backend không còn dùng header này để cấp quyền xem đơn hàng.
     'x-order-phone',
   ],
 };

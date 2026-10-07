@@ -251,26 +251,6 @@ export const getOrderByCode = async (req: AuthenticatedRequest, res: Response) =
       setOrderAccessCookie(res, order.orderCode, suppliedHeaderToken);
     }
 
-    // Nâng cấp đơn cũ: sau khi khách xác minh đúng mã đơn + số điện thoại,
-    // cấp một token ngẫu nhiên để các lần mở sau không cần tiếp tục gửi SĐT.
-    let issuedOrderAccessToken: string | undefined;
-    if (!order.accessTokenHash && req.headers['x-order-phone']) {
-      const candidateToken = createOrderAccessToken();
-      const claimed = await (prisma as any).order.updateMany({
-        where: { id: order.id, accessTokenHash: null },
-        data: { accessTokenHash: hashOrderAccessToken(candidateToken) },
-      });
-      if (claimed.count === 1) issuedOrderAccessToken = candidateToken;
-      order = await (prisma as any).order.findUnique({
-        where: { id: order.id },
-        include: { items: true },
-      });
-    }
-
-    if (issuedOrderAccessToken) {
-      setOrderAccessCookie(res, order.orderCode, issuedOrderAccessToken);
-    }
-
     if (
       order.stockReservationStatus === 'HELD' &&
       order.paymentStatus !== 'PAID' &&

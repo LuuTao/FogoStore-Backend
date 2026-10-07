@@ -5,7 +5,6 @@ import { readCookie } from './authSession';
 
 type ProtectedOrder = {
   userId?: string | null;
-  customerPhone?: string | null;
   accessTokenHash?: string | null;
   orderCode?: string | null;
 };
@@ -19,11 +18,6 @@ const constantTimeEqual = (left: string, right: string) => {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-};
-
-const normalizePhone = (value: unknown) => {
-  const digits = String(value || '').replace(/\D/g, '');
-  return digits.startsWith('84') ? `0${digits.slice(2)}` : digits;
 };
 
 const orderCookieName = (orderCode: unknown) =>
@@ -47,8 +41,15 @@ export const readOrderAccessToken = (req: Request, orderCode: unknown) =>
 
 export const canAccessOrder = (req: AuthenticatedRequest, order: ProtectedOrder) => {
   if (req.user?.role === 'ADMIN') return true;
-  if (req.user?.id && order.userId && req.user.id === order.userId) return true;
 
+  // Đơn đã gắn với tài khoản chỉ chủ tài khoản đó mới được truy cập.
+  // Không chấp nhận token hoặc số điện thoại để mở đơn của tài khoản khác.
+  if (order.userId) {
+    return Boolean(req.user?.id && req.user.id === order.userId);
+  }
+
+  // Đơn guest không có tài khoản chỉ được mở bằng token bí mật được cấp
+  // cho đúng trình duyệt tại thời điểm tạo đơn.
   const suppliedToken = String(
     req.headers['x-order-token'] || readOrderAccessToken(req, order.orderCode) || ''
   ).trim();
@@ -56,9 +57,7 @@ export const canAccessOrder = (req: AuthenticatedRequest, order: ProtectedOrder)
     return constantTimeEqual(hashOrderAccessToken(suppliedToken), order.accessTokenHash);
   }
 
-  const suppliedPhone = normalizePhone(req.headers['x-order-phone']);
-  const orderPhone = normalizePhone(order.customerPhone);
-  return !order.accessTokenHash && suppliedPhone.length >= 9 && constantTimeEqual(suppliedPhone, orderPhone);
+  return false;
 };
 
 export const rejectOrderAccess = (res: Response) =>
