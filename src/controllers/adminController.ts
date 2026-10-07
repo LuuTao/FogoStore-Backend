@@ -350,11 +350,14 @@ export const deleteVariant = async (req: Request, res: Response) => {
 // 8. IMPORT SẢN PHẨM TỰ ĐỘNG - PHÂN TÍCH CHUẨN XÁC DUNG LƯỢNG, MÀU SẮC, XUẤT XỨ
 // =========================================================================================
 export const importExcel = async (req: any, res: Response) => {
+  const file = req.file;
+
   try {
-    const file = req.file;
     if (!file) {
       return res.status(400).json({ success: false, error: 'Chưa đính kèm file Excel hợp lệ' });
     }
+
+    const isPreview = req.path?.endsWith('/preview') || String(req.body?.preview || '').toLowerCase() === 'true';
 
     const workbook = new ExcelJS.Workbook();
     if (file.path) {
@@ -408,20 +411,60 @@ export const importExcel = async (req: any, res: Response) => {
       if (found) categoryCache[cName] = found.id;
     }
 
-    const modelGroupMap = new Map<string, {
+    type ImportVariant = {
+      rowNumber: number;
+      sku: string | null;
+      storage: string;
+      color: string;
+      origin: string;
+      price: number;
+      originalPrice: number;
+      stock: number;
+      imageUrl: string;
+    };
+
+    type ImportProductGroup = {
       productName: string;
       parentSlug: string;
       categoryName: string;
       description: string;
-      variants: any[];
-    }>();
+      hasExplicitDescription: boolean;
+      variants: Map<string, ImportVariant>;
+    };
+
+    const slugify = (value: string) => value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    const normalizeText = (value: string | null | undefined) => (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    const normalizeSku = (value: string) => value.replace(/\s+/g, ' ').trim().toUpperCase();
+    const naturalVariantKey = (storage: string, color: string, origin: string) =>
+      [storage, color, origin].map(normalizeText).join('|');
+
+    const modelGroupMap = new Map<string, ImportProductGroup>();
+    let skippedRows = 0;
+    let duplicateRows = 0;
 
     for (let r = 2; r <= worksheet.rowCount; r++) {
       const row = worksheet.getRow(r);
       if (!row.hasValues) continue;
 
       const rawFullName = getRowValue(row, ['tên sản phẩm', 'tên', 'title', 'product name']);
-      if (!rawFullName) continue;
+      if (!rawFullName) {
+        skippedRows++;
+        continue;
+      }
 
       const opt1Name = getRowValue(row, ['thuộc tính 1', 'option1 name']).toLowerCase();
       const opt1Val = getRowValue(row, ['giá trị thuộc tính 1', 'option1 value']);
@@ -488,15 +531,14 @@ export const importExcel = async (req: any, res: Response) => {
       const rawModelSlug = getRowValue(row, ['mã model (slug cha)', 'mã model', 'model slug', 'parent slug']);
       let parentSlug = rawModelSlug;
       if (!parentSlug) {
-        parentSlug = cleanProductName
-          .toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/[đĐ]/g, 'd')
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
+        parentSlug = slugify(cleanProductName);
       } else {
-        parentSlug = parentSlug.replace(/-(256gb|512gb|1tb|2tb|128gb|64gb).*$/i, '').trim();
+        parentSlug = slugify(parentSlug.replace(/-(256gb|512gb|1tb|2tb|128gb|64gb).*$/i, '').trim());
+      }
+
+      if (!parentSlug) {
+        skippedRows++;
+        continue;
       }
 
       const rawPrice = getRowValue(row, ['giá bán (vnđ)', 'giá bán', 'giá', 'variant price']);
@@ -509,7 +551,8 @@ export const importExcel = async (req: any, res: Response) => {
 
       const price = parseNum(rawPrice);
       const originalPrice = parseNum(rawOriginalPrice) || price;
-      const stock = price <= 0 ? 0 : (parseNum(rawStock) || 10);
+      // Phân biệt ô trống với số 0: trước đây `0 || 10` làm tồn kho 0 bị đổi thành 10.
+      const stock = price <= 0 ? 0 : (rawStock.trim() === '' ? 10 : parseNum(rawStock));
 
       let finalCategoryName = rawCategory;
       const combined = `${rawCategory} ${cleanProductName}`.toLowerCase();
@@ -527,114 +570,280 @@ export const importExcel = async (req: any, res: Response) => {
           parentSlug: parentSlug,
           categoryName: finalCategoryName,
           description: sanitizeRichHtml(rawDescription || `Sản phẩm chính hãng ${cleanProductName} tại FoGo Store`),
-          variants: [],
+          hasExplicitDescription: Boolean(rawDescription),
+          variants: new Map(),
         });
       }
 
-      const cleanColorSlug = color
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[đĐ]/g, 'd')
-        .replace(/[^a-z0-9]+/g, '-');
-      const cleanStorageSlug = storage.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const cleanOriginSlug = origin.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const sku = rawVariantId ? normalizeSku(rawVariantId) : null;
+      const dedupeKey = sku ? `sku:${sku}` : `natural:${naturalVariantKey(storage, color, origin)}`;
+      const group = modelGroupMap.get(parentSlug)!;
+      if (group.variants.has(dedupeKey)) duplicateRows++;
 
-      const randomSuffix = rawVariantId || Math.floor(Math.random() * 100000);
-      const variantSlug = `${parentSlug}-${cleanStorageSlug}-${cleanColorSlug}-${cleanOriginSlug}-${randomSuffix}`.replace(/-+/g, '-');
-
-      modelGroupMap.get(parentSlug)!.variants.push({
-        rawVariantId,
+      // Nếu một cấu hình xuất hiện nhiều lần trong cùng file, dòng cuối cùng là dữ liệu mới nhất.
+      group.variants.set(dedupeKey, {
+        rowNumber: r,
+        sku,
         storage,
         color,
         origin,
         price,
         originalPrice,
         stock,
-        slug: variantSlug,
         imageUrl: rawImage.startsWith('http') ? rawImage : '',
       });
     }
 
-    let importedVariantCount = 0;
+    const summary = {
+      productsCreated: 0,
+      productsUpdated: 0,
+      variantsCreated: 0,
+      variantsUpdated: 0,
+      variantsUnchanged: 0,
+      conflicts: 0,
+      skippedRows,
+      duplicateRows,
+    };
+    const warnings: string[] = [];
+
+    const missingSkuCount = Array.from(modelGroupMap.values())
+      .flatMap((item) => Array.from(item.variants.values()))
+      .filter((variant) => !variant.sku).length;
+    if (missingSkuCount > 0) {
+      warnings.push(`${missingSkuCount} cấu hình chưa có cột Mã biến thể. Giá và tồn kho vẫn được đối chiếu theo thuộc tính, nhưng cần bổ sung mã để đổi màu/dung lượng mà không tạo cấu hình mới.`);
+    }
+
+    const incomingSkus = Array.from(modelGroupMap.values())
+      .flatMap((item) => Array.from(item.variants.values()))
+      .map((variant) => variant.sku)
+      .filter((sku): sku is string => Boolean(sku));
+
+    const variantsBySku = new Map<string, any>();
+    if (incomingSkus.length > 0) {
+      const existingBySku = await prisma.productVariant.findMany({
+        where: { sku: { in: Array.from(new Set(incomingSkus)) } },
+      });
+      existingBySku.forEach((variant) => {
+        if (variant.sku) variantsBySku.set(variant.sku, variant);
+      });
+    }
+
+    // Kiểm tra toàn bộ xung đột trước khi ghi bất kỳ dữ liệu nào để tránh import dở dang.
+    const productsByGroup = new Map<string, any>();
+    for (const [parentSlug, item] of modelGroupMap.entries()) {
+      const productBySlug = await prisma.product.findUnique({
+        where: { slug: parentSlug },
+        include: { variants: { orderBy: { createdAt: 'asc' } } },
+      });
+      const product = productBySlug || await prisma.product.findFirst({
+        where: { name: item.productName },
+        include: { variants: { orderBy: { createdAt: 'asc' } } },
+      });
+      productsByGroup.set(parentSlug, product);
+    }
+
+    const incomingSkuOwners = new Map<string, string>();
+    const conflictingImportKeys = new Set<string>();
+    for (const [parentSlug, item] of modelGroupMap.entries()) {
+      const product = productsByGroup.get(parentSlug);
+      for (const variant of item.variants.values()) {
+        if (!variant.sku) continue;
+
+        const conflictKey = `${parentSlug}|${variant.sku}`;
+        const priorOwner = incomingSkuOwners.get(variant.sku);
+        if (priorOwner && priorOwner !== parentSlug) {
+          conflictingImportKeys.add(conflictKey);
+          conflictingImportKeys.add(`${priorOwner}|${variant.sku}`);
+          warnings.push(`Mã biến thể ${variant.sku} xuất hiện ở nhiều model trong cùng file.`);
+        } else {
+          incomingSkuOwners.set(variant.sku, parentSlug);
+        }
+
+        const skuMatch = variantsBySku.get(variant.sku);
+        if (skuMatch && (!product || skuMatch.productId !== product.id)) {
+          conflictingImportKeys.add(conflictKey);
+          warnings.push(`Dòng ${variant.rowNumber}: mã biến thể ${variant.sku} đang thuộc một model khác.`);
+        }
+      }
+    }
+    summary.conflicts = conflictingImportKeys.size;
+
+    if (!isPreview && summary.conflicts > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'File có Mã biến thể bị xung đột. Chưa có dữ liệu nào được nhập.',
+        summary,
+        warnings: warnings.slice(0, 20),
+      });
+    }
+
+    const reservedSlugs = new Set<string>();
+    const createAvailableSlug = async (base: string) => {
+      const cleanBase = slugify(base) || `bien-the-${Date.now()}`;
+      let candidate = cleanBase;
+      let suffix = 2;
+
+      while (reservedSlugs.has(candidate) || await prisma.productVariant.findUnique({ where: { slug: candidate }, select: { id: true } })) {
+        candidate = `${cleanBase}-${suffix++}`;
+      }
+      reservedSlugs.add(candidate);
+      return candidate;
+    };
 
     for (const [parentSlug, item] of modelGroupMap.entries()) {
       let catId = categoryCache[item.categoryName];
       if (!catId) {
         let cat = await prisma.category.findFirst({ where: { name: item.categoryName } });
-        if (!cat) {
-          const catSlug = item.categoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        if (!cat && !isPreview) {
+          const catSlug = slugify(item.categoryName);
           cat = await prisma.category.create({ data: { name: item.categoryName, slug: catSlug } });
         }
-        catId = cat.id;
-        categoryCache[item.categoryName] = catId;
+        catId = cat?.id || '';
+        if (catId) categoryCache[item.categoryName] = catId;
       }
 
-      let product = await prisma.product.findFirst({
-        where: {
-          OR: [{ slug: parentSlug }, { name: item.productName }],
-        },
-      });
+      let product = productsByGroup.get(parentSlug);
 
       if (!product) {
-        product = await prisma.product.create({
-          data: {
-            name: item.productName,
-            slug: parentSlug,
-            categoryId: catId,
-            description: item.description,
-          },
-        });
-      } else if (item.description && (!product.description || product.description.length < 50)) {
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { description: item.description },
-        });
+        summary.productsCreated++;
+        if (!isPreview) {
+          product = await prisma.product.create({
+            data: {
+              name: item.productName,
+              slug: parentSlug,
+              categoryId: catId,
+              description: item.description,
+            },
+            include: { variants: true },
+          });
+        }
+      } else {
+        const productUpdate: Record<string, any> = {};
+        if (product.name !== item.productName) productUpdate.name = item.productName;
+        if (catId && product.categoryId !== catId) productUpdate.categoryId = catId;
+        if (item.hasExplicitDescription && product.description !== item.description) {
+          productUpdate.description = item.description;
+        }
+
+        if (Object.keys(productUpdate).length > 0) {
+          summary.productsUpdated++;
+          if (!isPreview) {
+            product = await prisma.product.update({
+              where: { id: product.id },
+              data: productUpdate,
+              include: { variants: { orderBy: { createdAt: 'asc' } } },
+            });
+          }
+        }
       }
 
-      for (const v of item.variants) {
-        await prisma.productVariant.upsert({
-          where: { slug: v.slug },
-          update: {
-            price: v.price,
-            originalPrice: v.originalPrice,
-            stock: v.stock,
-            origin: v.origin,
-            storage: v.storage,
-            color: v.color,
-            ...(v.imageUrl && { images: [v.imageUrl] }),
-          },
-          create: {
-            productId: product.id,
-            storage: v.storage,
-            color: v.color,
-            origin: v.origin,
-            slug: v.slug,
-            price: v.price,
-            originalPrice: v.originalPrice,
-            stock: v.stock,
-            images: v.imageUrl ? [v.imageUrl] : [],
-          },
-        });
-        importedVariantCount++;
+      const productVariants: any[] = product?.variants ? [...product.variants] : [];
+
+      for (const v of item.variants.values()) {
+        if (v.sku && conflictingImportKeys.has(`${parentSlug}|${v.sku}`)) continue;
+
+        const skuMatch = v.sku ? variantsBySku.get(v.sku) : undefined;
+        const naturalKey = naturalVariantKey(v.storage, v.color, v.origin);
+        const naturalMatches = productVariants.filter((candidate) =>
+          naturalVariantKey(candidate.storage, candidate.color, candidate.origin || 'Việt Nam') === naturalKey
+        );
+
+        if (naturalMatches.length > 1 && !skuMatch) {
+          warnings.push(`Dòng ${v.rowNumber}: phát hiện ${naturalMatches.length} cấu hình cũ bị trùng; đã cập nhật bản ghi cũ nhất và giữ nguyên các bản còn lại để bạn kiểm tra.`);
+        }
+
+        // Có SKU: ưu tiên SKU. Chỉ dùng khóa tự nhiên để gắn SKU cho dữ liệu cũ chưa có mã.
+        // Không có SKU: khóa tự nhiên giúp nhập lại giá/tồn kho mà không sinh cấu hình mới.
+        let matchedVariant = skuMatch;
+        if (!matchedVariant) {
+          matchedVariant = v.sku
+            ? naturalMatches.find((candidate) => !candidate.sku)
+            : naturalMatches[0];
+        }
+
+        if (!matchedVariant) {
+          summary.variantsCreated++;
+          if (!isPreview && product) {
+            const identityPart = v.sku || [v.storage, v.color, v.origin].join('-');
+            const slug = await createAvailableSlug(`${product.slug}-${identityPart}`);
+            const created = await prisma.productVariant.create({
+              data: {
+                sku: v.sku,
+                productId: product.id,
+                storage: v.storage,
+                color: v.color,
+                origin: v.origin,
+                slug,
+                price: v.price,
+                originalPrice: v.originalPrice,
+                stock: v.stock,
+                images: v.imageUrl ? [v.imageUrl] : [],
+              },
+            });
+            productVariants.push(created);
+            if (created.sku) variantsBySku.set(created.sku, created);
+          }
+          continue;
+        }
+
+        const nextImages = v.imageUrl ? [v.imageUrl] : matchedVariant.images;
+        const hasChanges =
+          matchedVariant.sku !== v.sku && Boolean(v.sku) ||
+          matchedVariant.storage !== v.storage ||
+          matchedVariant.color !== v.color ||
+          (matchedVariant.origin || 'Việt Nam') !== v.origin ||
+          Number(matchedVariant.price) !== v.price ||
+          Number(matchedVariant.originalPrice) !== v.originalPrice ||
+          matchedVariant.stock !== v.stock ||
+          (v.imageUrl && JSON.stringify(matchedVariant.images) !== JSON.stringify(nextImages));
+
+        if (!hasChanges) {
+          summary.variantsUnchanged++;
+          continue;
+        }
+
+        summary.variantsUpdated++;
+        if (!isPreview) {
+          const updated = await prisma.productVariant.update({
+            where: { id: matchedVariant.id },
+            data: {
+              ...(v.sku && { sku: v.sku }),
+              storage: v.storage,
+              color: v.color,
+              origin: v.origin,
+              price: v.price,
+              originalPrice: v.originalPrice,
+              stock: v.stock,
+              ...(v.imageUrl && { images: nextImages }),
+            },
+          });
+          const matchedIndex = productVariants.findIndex((candidate) => candidate.id === updated.id);
+          if (matchedIndex >= 0) productVariants[matchedIndex] = updated;
+          if (updated.sku) variantsBySku.set(updated.sku, updated);
+        }
       }
     }
 
-    if (file.path && fs.existsSync(file.path)) {
+    return res.json({
+      success: true,
+      preview: isPreview,
+      summary,
+      warnings: warnings.slice(0, 20),
+      message: isPreview
+        ? `Đã kiểm tra ${modelGroupMap.size} model. Hãy xem kết quả và xác nhận nhập dữ liệu.`
+        : `Hoàn tất: tạo ${summary.productsCreated} model, cập nhật ${summary.productsUpdated} model; tạo ${summary.variantsCreated}, cập nhật ${summary.variantsUpdated} và giữ nguyên ${summary.variantsUnchanged} cấu hình.`,
+    });
+  } catch (err: any) {
+    console.error('Lỗi Import Excel:', err);
+    return res.status(500).json({ success: false, error: 'Lỗi xử lý file Excel: ' + err.message });
+  } finally {
+    if (file?.path && fs.existsSync(file.path)) {
       try {
         fs.unlinkSync(file.path);
       } catch (e) {
         console.warn('Không thể xóa file tạm:', e);
       }
     }
-
-    return res.json({
-      success: true,
-      message: `Đã nạp thành công ${modelGroupMap.size} dòng máy và ${importedVariantCount} cấu hình biến thể vào kho FoGo Store!`,
-    });
-  } catch (err: any) {
-    console.error('Lỗi Import Excel:', err);
-    return res.status(500).json({ success: false, error: 'Lỗi xử lý file Excel: ' + err.message });
   }
 };
 

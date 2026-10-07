@@ -101,6 +101,7 @@ model Product {
 
 model ProductVariant {
   id            String      @id @default(cuid())
+  sku           String?     @unique
   productId     String
   product       Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
   storage       String

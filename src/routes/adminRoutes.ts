@@ -177,6 +177,7 @@ router.patch('/variants/:variantId', patchVariant);
 router.delete('/variants/:variantId', deleteVariant);
 
 // Import Sản phẩm Excel & Xóa hàng loạt (Gắn Limiter chống spam / treo server)
+router.post('/products/import-excel/preview', adminActionLimiter, uploadMemory.single('file'), importExcel);
 router.post('/products/import-excel', adminActionLimiter, uploadMemory.single('file'), importExcel);
 router.post('/products/bulk-delete', adminActionLimiter, deleteProductsBulk);
 
