@@ -164,11 +164,11 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
           customerPhone,
           customerEmail,
           gender: body.gender || 'anh',
-          deliveryMethod: body.deliveryMethod || (body.address ? 'Giao hàng tận nơi' : 'Nhận tại cửa hàng'),
+          deliveryMethod: 'Giao hàng tận nơi',
           province: body.province || body.city || '',
           district: body.district || '',
           address: body.address || body.specificAddress || '',
-          storeAddress: body.storeAddress || '',
+          storeAddress: '',
           note: body.note || '',
           paymentMethod,
           paymentStatus: initialPaymentStatus,
@@ -507,7 +507,7 @@ export const updateOrderCustomer = async (req: AuthenticatedRequest, res: Respon
   try {
     const rawCode = req.params.orderCode;
     const orderCode = Array.isArray(rawCode) ? rawCode[0] : rawCode;
-    const { customerName, customerPhone, address, note, paymentMethod } = req.body;
+    const { customerName, customerPhone, address, province, district, note, paymentMethod } = req.body;
 
     if (!orderCode) {
       return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
@@ -542,6 +542,12 @@ export const updateOrderCustomer = async (req: AuthenticatedRequest, res: Respon
     }
     if (address !== undefined && String(address).length > 500) {
       return res.status(400).json({ success: false, error: 'Địa chỉ nhận hàng quá dài' });
+    }
+    if (province !== undefined && (!String(province).trim() || String(province).length > 120)) {
+      return res.status(400).json({ success: false, error: 'Tỉnh hoặc thành phố không hợp lệ' });
+    }
+    if (district !== undefined && (!String(district).trim() || String(district).length > 120)) {
+      return res.status(400).json({ success: false, error: 'Xã, phường hoặc thị trấn không hợp lệ' });
     }
     if (note !== undefined && String(note).length > 1000) {
       return res.status(400).json({ success: false, error: 'Ghi chú đơn hàng quá dài' });
@@ -587,6 +593,12 @@ export const updateOrderCustomer = async (req: AuthenticatedRequest, res: Respon
         ...(customerName && { customerName: customerName.trim() }),
         ...(customerPhone && { customerPhone: customerPhone.trim() }),
         ...(address !== undefined && { address: address.trim() }),
+        ...(province !== undefined && { province: String(province).trim() }),
+        ...(district !== undefined && { district: String(district).trim() }),
+        ...((address !== undefined || province !== undefined || district !== undefined) && {
+          deliveryMethod: 'Giao hàng tận nơi',
+          storeAddress: '',
+        }),
         ...(note !== undefined && { note: note.trim() }),
         ...paymentUpdate,
       },
