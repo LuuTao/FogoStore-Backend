@@ -18,6 +18,7 @@ import contentRoutes from './routes/contentRoutes';
 import adminRoutes from './routes/adminRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 import cartRoutes from './routes/cart';
+import locationRoutes from './routes/locationRoutes';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -203,7 +204,7 @@ app.use(async (req, res, next) => {
 app.get('/api/menu', (req, res) => res.json({ success: true, data: [] }));
 
 // Không cho trình duyệt/CDN lưu lại hồ sơ, giỏ hàng, đơn hàng hoặc dữ liệu quản trị.
-app.use(['/api/auth', '/api/orders', '/api/cart', '/api/admin'], (_req, res, next) => {
+app.use(['/api/auth', '/api/orders', '/api/cart', '/api/admin', '/api/location'], (_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, private');
   res.setHeader('Pragma', 'no-cache');
   next();
@@ -214,6 +215,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/cart', cartRoutes);
+app.use('/api/location', locationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', contentRoutes);
 
