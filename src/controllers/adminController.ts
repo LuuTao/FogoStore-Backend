@@ -81,20 +81,29 @@ export const createFullProduct = async (req: Request, res: Response) => {
         isHot: Boolean(isHot),
         specs: { productTags: normalizedTags },
         variants: {
-          create: variants.map((v: any) => {
+          create: variants.map((v: any, index: number) => {
             const st = (v.storage || 'Tiêu chuẩn').toString().replace(/\//g, '-');
             const p = Number(v.price || 0);
             const s = p <= 0 ? 0 : Number(v.stock || 0);
             const orig = (v.origin || 'Việt Nam').toString().trim();
             const col = (v.color || 'Tiêu chuẩn').toString().trim();
+            const variantIdentity = [st, col, v.size, v.version, index + 1]
+              .filter((part) => String(part || '').trim())
+              .join('-')
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[đĐ]/g, 'd')
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-+|-+$/g, '');
 
             return {
               storage: st,
               color: col,
               origin: orig,
-              slug: `${st.toLowerCase()}-${col
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-3)}`,
+              ...(String(v.size || '').trim() && { size: String(v.size).trim() }),
+              ...(String(v.version || '').trim() && { version: String(v.version).trim() }),
+              slug: `${cleanSlug}-${variantIdentity}-${Date.now().toString().slice(-4)}`,
               price: p,
               originalPrice: Number(v.originalPrice || p || 0),
               stock: s,
@@ -204,9 +213,15 @@ export const addVariant = async (req: Request, res: Response) => {
     const s = p <= 0 ? 0 : Number(stock || 0);
     const orig = (origin || 'Việt Nam').toString().trim();
 
-    const variantSlug = `${cleanSt.toLowerCase()}-${color
+    const variantSlug = [cleanSt, color, size, version, Date.now().toString().slice(-6)]
+      .filter((part) => String(part || '').trim())
+      .join('-')
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
 
     const newVariant = await prisma.productVariant.create({
       data: {
@@ -426,6 +441,8 @@ export const importExcel = async (req: any, res: Response) => {
       storage: string;
       color: string;
       origin: string;
+      size: string;
+      version: string;
       price: number;
       originalPrice: number;
       stock: number;
@@ -458,8 +475,8 @@ export const importExcel = async (req: any, res: Response) => {
       .toLowerCase();
 
     const normalizeSku = (value: string) => value.replace(/\s+/g, ' ').trim().toUpperCase();
-    const naturalVariantKey = (storage: string, color: string, origin: string) =>
-      [storage, color, origin].map(normalizeText).join('|');
+    const naturalVariantKey = (storage: string, color: string, origin: string, size = '', version = '') =>
+      [storage, color, origin, size, version].map(normalizeText).join('|');
 
     const modelGroupMap = new Map<string, ImportProductGroup>();
     let skippedRows = 0;
@@ -557,6 +574,8 @@ export const importExcel = async (req: any, res: Response) => {
       const rawDescription = getRowValue(row, ['mô tả', 'body (html)', 'description']);
       const rawCategory = getRowValue(row, ['danh mục', 'loại sản phẩm', 'product type', 'category']);
       const rawVariantId = getRowValue(row, ['mã biến thể', 'variant id', 'id']);
+      const size = getRowValue(row, ['kích thước màn hình', 'kích thước', 'size']);
+      const version = getRowValue(row, ['cấu hình cpu/gpu / phiên bản', 'cấu hình cpu/gpu', 'cpu/gpu', 'phiên bản', 'version']);
 
       const price = parseNum(rawPrice);
       const originalPrice = parseNum(rawOriginalPrice) || price;
@@ -585,7 +604,7 @@ export const importExcel = async (req: any, res: Response) => {
       }
 
       const sku = rawVariantId ? normalizeSku(rawVariantId) : null;
-      const dedupeKey = sku ? `sku:${sku}` : `natural:${naturalVariantKey(storage, color, origin)}`;
+      const dedupeKey = sku ? `sku:${sku}` : `natural:${naturalVariantKey(storage, color, origin, size, version)}`;
       const group = modelGroupMap.get(parentSlug)!;
       if (group.variants.has(dedupeKey)) duplicateRows++;
 
@@ -596,6 +615,8 @@ export const importExcel = async (req: any, res: Response) => {
         storage,
         color,
         origin,
+        size,
+        version,
         price,
         originalPrice,
         stock,
@@ -752,9 +773,9 @@ export const importExcel = async (req: any, res: Response) => {
         if (v.sku && conflictingImportKeys.has(`${parentSlug}|${v.sku}`)) continue;
 
         const skuMatch = v.sku ? variantsBySku.get(v.sku) : undefined;
-        const naturalKey = naturalVariantKey(v.storage, v.color, v.origin);
+        const naturalKey = naturalVariantKey(v.storage, v.color, v.origin, v.size, v.version);
         const naturalMatches = productVariants.filter((candidate) =>
-          naturalVariantKey(candidate.storage, candidate.color, candidate.origin || 'Việt Nam') === naturalKey
+          naturalVariantKey(candidate.storage, candidate.color, candidate.origin || 'Việt Nam', candidate.size || '', candidate.version || '') === naturalKey
         );
 
         if (naturalMatches.length > 1 && !skuMatch) {
@@ -782,6 +803,8 @@ export const importExcel = async (req: any, res: Response) => {
                 storage: v.storage,
                 color: v.color,
                 origin: v.origin,
+                size: v.size || null,
+                version: v.version || null,
                 slug,
                 price: v.price,
                 originalPrice: v.originalPrice,
@@ -801,6 +824,8 @@ export const importExcel = async (req: any, res: Response) => {
           matchedVariant.storage !== v.storage ||
           matchedVariant.color !== v.color ||
           (matchedVariant.origin || 'Việt Nam') !== v.origin ||
+          (matchedVariant.size || '') !== v.size ||
+          (matchedVariant.version || '') !== v.version ||
           Number(matchedVariant.price) !== v.price ||
           Number(matchedVariant.originalPrice) !== v.originalPrice ||
           matchedVariant.stock !== v.stock ||
@@ -820,6 +845,8 @@ export const importExcel = async (req: any, res: Response) => {
               storage: v.storage,
               color: v.color,
               origin: v.origin,
+              size: v.size || null,
+              version: v.version || null,
               price: v.price,
               originalPrice: v.originalPrice,
               stock: v.stock,
