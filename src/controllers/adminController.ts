@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
-import { validateTags } from './productTagsController';
+import { normalizeProductTags, validateTags } from './productTagsController';
 import { clearCachePattern } from '../middlewares/cacheMiddleware';
 import { releaseOrderStock, isOnlinePaymentMethod } from '../services/stockReservationService';
 import { writeAuditLog } from '../services/auditLogService';
@@ -38,13 +38,18 @@ export const getInventory = async (req: Request, res: Response) => {
 // ==========================================
 export const createFullProduct = async (req: Request, res: Response) => {
   try {
-    const { name, categoryName, description, isFeatured, isHot, variants } = req.body;
+    const { name, categoryName, description, isFeatured, isHot, variants, tags = [] } = req.body;
 
     if (!name || !categoryName || !variants || variants.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'Vui lòng nhập tên sản phẩm, danh mục và ít nhất 1 biến thể',
       });
+    }
+
+    const normalizedTags = normalizeProductTags(tags);
+    if (!normalizedTags) {
+      return res.status(400).json({ success: false, error: 'Danh sách tag sản phẩm không hợp lệ' });
     }
 
     let cat = await prisma.category.findFirst({ where: { name: categoryName } });
@@ -74,6 +79,7 @@ export const createFullProduct = async (req: Request, res: Response) => {
         isFeatured: Boolean(isFeatured),
         isFlashSale: false,
         isHot: Boolean(isHot),
+        specs: { productTags: normalizedTags },
         variants: {
           create: variants.map((v: any) => {
             const st = (v.storage || 'Tiêu chuẩn').toString().replace(/\//g, '-');
@@ -101,6 +107,7 @@ export const createFullProduct = async (req: Request, res: Response) => {
       include: { variants: true, category: true },
     });
 
+    await clearCachePattern('fogo_cache:*products*');
     return res.status(201).json({ success: true, data: newProduct });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -253,10 +260,12 @@ export const updateVariant = async (req: Request, res: Response) => {
     const updated = await prisma.$transaction(async (tx) => {
       const before = await tx.productVariant.findUnique({ where: { id } });
       if (req.body.tags !== undefined) {
+        const normalizedTags = normalizeProductTags(req.body.tags);
+        if (!normalizedTags) throw new Error('Danh sách tag sản phẩm không hợp lệ');
         const variant = await tx.productVariant.findUniqueOrThrow({ where: { id }, include: { product: true } });
         const existing = variant.product.specs;
         const specs = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
-        await tx.product.update({ where: { id: variant.productId }, data: { specs: { ...specs, productTags: req.body.tags } } });
+        await tx.product.update({ where: { id: variant.productId }, data: { specs: { ...specs, productTags: normalizedTags } } });
       }
       const saved = await tx.productVariant.update({
       where: { id },
